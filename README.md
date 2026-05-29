@@ -198,7 +198,9 @@ allowlist (and flags any write-capable entry). Exits non-zero on any failed asse
 ## Exercise it
 
 1. With `./run.sh start` running, open the fakechat UI at
-   **http://localhost:8787** (PLAN.md §9).
+   **http://localhost:8787** (PLAN.md §9). `start` prints the exact URL.
+   The port is configurable via `FAKECHAT_PORT` if 8787 is taken:
+   `FAKECHAT_PORT=8799 ./run.sh start` → http://localhost:8799.
 2. Type: **"what's on my calendar today?"**
 3. Domo reads your calendar via the Google MCP connector and **replies in the
    browser** with your events.

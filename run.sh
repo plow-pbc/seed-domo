@@ -61,6 +61,12 @@ GOOGLE_MCP_URL="https://calendarmcp.googleapis.com/mcp/v1"
 # Space-separated if more channels are ever added.
 CHANNELS_FLAG="plugin:fakechat@claude-plugins-official"
 
+# fakechat serves its localhost UI on FAKECHAT_PORT (default 8787). Confirmed in
+# the plugin source: `const PORT = Number(process.env.FAKECHAT_PORT ?? 8787)`
+# (anthropics/claude-plugins-official). Override if 8787 is taken, e.g.
+#   FAKECHAT_PORT=8799 ./run.sh start
+FAKECHAT_PORT="${FAKECHAT_PORT:-8787}"
+
 # Active allowlist (mirrors hooks/allowlist-guard.sh). Echoed by `doctor` so the
 # operator can eyeball what is permitted without opening the hook.
 # TODO-VERIFY at setup: the literal tool_names as seen by PreToolUse — the
@@ -216,8 +222,12 @@ cmd_start() {
   # Scope file tools to the dedicated workspace.
   cd "$WORKSPACE"
 
+  # fakechat reads FAKECHAT_PORT from the environment; export it so the demo UI
+  # binds where we expect and we can print the right URL.
+  export FAKECHAT_PORT
   log "Starting persistent session in $WORKSPACE"
   log "Channels: $CHANNELS_FLAG"
+  log "fakechat UI: http://localhost:$FAKECHAT_PORT"
   # The ONE persistent session. No 'claude -p'. exec so signals pass through and
   # this script does not linger as a parent. Runs in the foreground TTY so the
   # one-time channels-preview consent (and a /login prompt, if not yet logged in)

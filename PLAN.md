@@ -291,7 +291,9 @@ Everything else (Bash, Write, Edit, WebFetch, …) → deny.
   for multiple).
 - Marketplace: `/plugin marketplace add anthropics/claude-plugins-official` then
   `/plugin install <name>@claude-plugins-official`.
-- fakechat: localhost UI at `http://localhost:8787`; inbound arrives as a
+- fakechat: localhost UI at `http://localhost:8787` (port configurable via
+  `FAKECHAT_PORT`, default 8787 — confirmed in the plugin source
+  `Number(process.env.FAKECHAT_PORT ?? 8787)`); inbound arrives as a
   `<channel source="fakechat">` event; reply shows in the browser.
 - Research preview — `--channels` flag/protocol may change.
 
