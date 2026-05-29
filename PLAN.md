@@ -128,7 +128,7 @@ the Mac (host-raw, subscription)
        -> Gather (Google Calendar/Gmail MCP, +imsg optional)
        -> compose -> privacy boundary -> reply (owner) / post (kiosk, optional)
 
-   PreToolUse deny-hook = default-block allowlist (security spine)
+   Permissions: --permission-mode auto (classifier-gated auto mode; no custom allowlist — §8)
 
    Isolation: CLAUDE_CONFIG_DIR=~/domo/.claude · own OAuth token · own workspace
 ```
@@ -215,8 +215,10 @@ boundary problem (see §7).
 - **Calendar connector is NOT isolated** — it's a **claude.ai account connector**,
   so it (and every other connector on that account) auto-loads into Domo's session on
   `/login`; there's no per-config-dir opt-out (#58453). Config/plugins/sessions/channel
-  stay isolated; connectors don't. The **default-deny hook** is what keeps Domo from
-  using any connector beyond the calendar read leaves — it's load-bearing for this.
+  stay isolated; connectors don't. ⚠️ With no custom allowlist (§8, auto mode), only
+  the generic classifier scopes what Domo does with other account connectors — it'll
+  soft-block their risky *writes* but may allow *reads*. Keep the account's connected
+  surface minimal until a Domo-specific guard returns.
 - **Run model:** channels need the session *open*, so run **one persistent `claude
   --channels`** in tmux/launchd for everything — interactive chat *and* the
   scheduled briefings (injected as events). There is no separate `-p` process.
@@ -227,47 +229,54 @@ boundary problem (see §7).
 
 ---
 
-## 8. Security model — default-deny allowlist
+## 8. Security model — POC uses Claude Code "auto mode" (classifier-gated)
 
-POC stance: **default block, allow explicitly. Don't "handle" permissions.**
+**Current decision:** no custom allowlist — the persistent session launches in
+**`--permission-mode auto`**, Claude Code's built-in **classifier-gated auto mode**
+(the shift+tab mode in the UI; v2.1.x). We removed the default-deny `PreToolUse` hook
+because it blocked the channel `reply` tool (Domo couldn't answer in the fakechat UI),
+and auto mode turns out to be a better baseline than a hand-rolled allowlist.
 
-The trap: a plain `--allowedTools` allowlist makes a *non*-allowlisted tool **prompt**,
-and in a backgrounded session a prompt **hangs** the session. And
-`--dangerously-skip-permissions` is allow-by-default (wrong direction).
+**What auto mode does** (live ruleset via `claude auto-mode defaults`): a classifier
+sorts each tool call into **allow** / **soft_deny** / **hard_deny**:
+- **allow (auto-approved, no prompt):** read-only ops, the channel `reply` ("answering
+  the user"), local file ops *within the project*, declared-dependency installs, memory
+  writes. → Domo's normal **calendar-read + reply** loop is here, so it never prompts
+  and never hangs the backgrounded session.
+- **soft_deny (blocked, user-overridable):** destructive git, prod deploys,
+  **irreversible local destruction**, **external-system writes**, real-world
+  transactions, credential exfil scouting.
+- **hard_deny (always blocked):** **data exfiltration** across the trust boundary,
+  working around the classifier.
 
-The right mechanism: a **`PreToolUse` hook** that **allows** tools on the allowlist
-and **denies** everything else, with **no prompt**. This is also exactly where the
-real authorization policy (the "VIP" gate) lives later.
+**Why `auto` and not `bypassPermissions`:** `bypassPermissions` (≡
+`--dangerously-skip-permissions`) is allow-**everything**, no classifier — a blank
+check. `auto` keeps the important guards (exfiltration hard-blocked, risky writes
+soft-blocked) while still auto-approving the safe path so nothing hangs. Override via
+`DOMO_PERMISSION_MODE` if needed.
 
-**Verified hook contract** (cite: `code.claude.com/docs/en/hooks.md`):
+**⚠️ Residual risk (eyes open).** Auto mode is a *generic* safety classifier, not a
+Domo-specific policy. It does **not** stop calendar **write** tools
+(`create_event`/`update_event`/`delete_event`/`respond_to_event`) on the owner's *own*
+calendar, and an always-on agent ingesting **untrusted inbound text** is still a
+prompt-injection surface for whatever auto mode classifies as "safe." Good enough for a
+single-user POC reading the owner's calendar and replying to the owner; before Domo can
+act on **others** or coordinate from a thread, add a Domo-specific authorization layer
+on top of auto mode.
 
-- Register in (isolated) `settings.json`:
-  ```json
-  {
-    "hooks": {
-      "PreToolUse": [
-        { "matcher": "*", "hooks": [ { "type": "command", "command": "<abs path>/allowlist-guard.sh", "timeout": 10 } ] }
-      ]
-    }
-  }
-  ```
-- Hook receives JSON on **stdin** with `tool_name`, `tool_input`, `permission_mode`, etc.
-- **Allow (no prompt):** stdout JSON, exit 0:
-  ```json
-  {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"on allowlist"}}
-  ```
-- **Deny (no prompt):** same JSON with `"permissionDecision":"deny"`, exit 0 — **or**
-  the hard-block form `exit 2` (stderr message shown to Claude).
-- ⚠️ **Known bug (#52822, ~v2.1.119):** a hook `"allow"` may still surface the native
-  permission prompt in some versions. **Headless workaround:** use `"allow"` for
-  allowlisted tools but verify no prompt appears in session logs; use **`exit 2`**
-  for denials (guaranteed no prompt). Confirm against the installed version.
+**If a custom guard returns** (the design we built and pulled, kept here as a quick
+re-add): a **`PreToolUse` hook** that allows an explicit allowlist and denies the rest
+with **no prompt** — allow `exit 0` + stdout `{"hookSpecificOutput":{"hookEventName":
+"PreToolUse","permissionDecision":"allow",…}}`, deny via **`exit 2`** (guaranteed-no-
+prompt hard block; cite `code.claude.com/docs/en/hooks.md`). Match the tool **leaf**
+and ignore the server segment. **Observed live tool names** (use these for the allowlist):
 
-**POC allowlist:** the Google Calendar **read leaves** (`list_calendars`,
-`list_events`, `get_event`, `suggest_time`) matched prefix-agnostically (the
-connector's server segment is an account UUID), plus the channel's `reply` tool
-(exact). Everything else — write leaves, every non-MCP tool (Bash, Write, Edit,
-WebFetch, …), and any *other* account connector — → deny.
+- Calendar (read): `mcp__claude_ai_Google_Calendar__{list_calendars,list_events,get_event,suggest_time}`
+- Calendar (write — keep OUT): `…__{create_event,update_event,delete_event,respond_to_event}`
+- Channel: `mcp__plugin_fakechat_fakechat__{reply,edit_message}` (allow `reply`)
+
+⚠️ Note the **`allow`-still-prompts bug #52822** (~v2.1.119): if you re-add the hook,
+verify allowlisted tools don't raise a prompt; rely on `exit 2` for denials.
 
 ---
 
@@ -293,8 +302,10 @@ that `/login`s with the same account. No `claude mcp add`, no GCP OAuth client, 
   (issues #22599, #22276). So the allowlist hook **matches the read leaf and ignores
   the UUID**; the exact leaves are confirmed empirically via the deny log.
 - **Scope:** the connector grants read **and** write; there is **no read-only mode**.
-  Read-only is enforced *solely* by the default-deny hook (allow read leaves, deny the
-  rest). This makes the hook load-bearing (see §7, §8).
+  With no custom allowlist (§8, auto mode), nothing Domo-specific enforces read-only;
+  auto mode soft-blocks some calendar writes (e.g. `respond_to_event` as an external
+  write) but does not reliably block writes to your *own* calendar. Re-adding the leaf
+  allowlist is how strict read-only comes back.
 - **Plan requirement:** connectors need Pro/Max/Team/Enterprise; work on subscription
   `/login` in persistent `--channels` sessions.
 - **Community fallback (not chosen):** `@cocal/google-calendar-mcp` (`nspady`) — a
@@ -323,33 +334,33 @@ that `/login`s with the same account. No `claude mcp add`, no GCP OAuth client, 
 failure is unambiguously in isolation/calendar/security — not a half-built channel.
 
 **The loop:**
-> Spin up an isolated Domo Claude → it has Google Calendar (read) via MCP + the
-> fakechat channel + the default-deny hook → type *"what's on my calendar today?"*
-> in the fakechat UI → it calls the calendar connector → replies in the browser with
-> your events.
+> Spin up an isolated Domo Claude → Google Calendar via the claude.ai **connector** +
+> the fakechat channel, running in **auto mode** (no allowlist) → type *"what's on my
+> calendar today?"* in the fakechat UI → it calls the calendar connector → replies in
+> the browser with your events.
 
 **Build (the `seed-domo` POC artifacts):**
-1. `run.sh` — sets `CLAUDE_CONFIG_DIR`/token/workspace; a one-time `setup`
-   (add Google MCP + `/mcp` OAuth, install fakechat) and a `start` (persistent
-   `claude --channels plugin:fakechat@claude-plugins-official`).
-2. `hooks/allowlist-guard.sh` — default-deny PreToolUse hook (allow = calendar read
-   tools + fakechat `reply`; deny everything else via the verified contract).
-3. `config/settings.json` — registers the hook.
-4. `README.md` — one-time interactive steps (Google OAuth, plugin install) vs the
-   persistent headless run.
+1. `run.sh` — sets `CLAUDE_CONFIG_DIR`/workspace; `setup` (install fakechat plugin),
+   `shell` (interactive `/login`), `start` (persistent `claude --channels … 
+   --permission-mode auto`), `doctor`.
+2. `README.md` — one-time interactive steps (connect calendar at claude.ai, `/login`)
+   vs the persistent run.
+
+*(Removed: the `hooks/allowlist-guard.sh` default-deny hook + `config/settings.json` —
+see §8. They can return when a real authorization policy does.)*
 
 **Acceptance criteria:**
 1. Inbound text arrives as a `<channel source="fakechat">` event.
-2. Claude calls **only** allowlisted tools (calendar read + reply) — confirm the
-   hook denies anything else, no prompt/hang.
-3. Reply lands in the fakechat UI with the correct events.
+2. Claude reads the calendar via the connector (`mcp__claude_ai_Google_Calendar__*`).
+3. Reply lands in the fakechat UI with the correct events — no prompt/hang.
 
 **Then:** swap the channel from fakechat → built-in `imessage` (real phone loop,
 still Plow-free) → optionally a **custom Plow Chat channel** (dedicated agent line +
 verified-member auth). Everything else stays put.
 
-**One-time interactive steps (can't be headless):** Google connector `/mcp` OAuth;
-channel install/pairing. After that the listener + hook run unattended.
+**One-time interactive steps (can't be headless):** connect the Google Calendar
+connector at claude.ai; `/login`; channel install/pairing. After that the listener
+runs unattended.
 
 ---
 
@@ -357,15 +368,18 @@ channel install/pairing. After that the listener + hook run unattended.
 
 - **Persistent-session billing pool** (interactive vs Agent SDK credit) — confirm.
 - **Agent SDK on subscription** — unresolved; the persistent `--channels` session avoids it.
-- **PreToolUse "allow" prompt bug (#52822)** — verify behavior on installed version;
-  fall back to `exit 2` for denials.
-- **Calendar = claude.ai connector** — confirm the read-tool **leaf** names via the
-  deny log (tool surface is `mcp__<account-UUID>__<leaf>`, UUID unpredictable). Note:
-  connector is **account-scoped** (inherits *all* account connectors; no per-config-dir
-  opt-out, #58453) and grants **read+write** (no read-only scope) — the default-deny
-  hook is the only thing enforcing read-only. First-party `calendarmcp.googleapis.com`
-  is unusable from Claude Code (DCR failure); community `@cocal/google-calendar-mcp` is
-  the backup.
+- **No Domo-specific guard (auto mode, §8)** — the POC runs `--permission-mode auto`
+  (classifier-gated): it hard-blocks exfiltration and soft-blocks risky writes, but
+  does **not** Domo-scope tools — calendar **writes on your own calendar** and local
+  workspace ops are auto-approved on an agent fed untrusted inbound. Tracked as the top
+  risk to close before Domo can send-to-others or coordinate from a thread. (Re-add: a
+  leaf allowlist via `PreToolUse` hook on top of auto mode; beware the
+  `allow`-still-prompts bug #52822, use `exit 2` for denials.)
+- **Calendar = claude.ai connector** — account-scoped (inherits *all* account
+  connectors; no per-config-dir opt-out, #58453) and grants **read+write** (no
+  read-only scope). Live tool surface confirmed: `mcp__claude_ai_Google_Calendar__*`.
+  First-party `calendarmcp.googleapis.com` is unusable from Claude Code (DCR failure);
+  community `@cocal/google-calendar-mcp` is the backup.
 - **Channels = research preview** — flag/protocol may change.
 - **Briefing trigger** — whether `/loop` composes with channel event-handling in one
   session is unverified; external `launchd`-into-channel trigger is the fallback.

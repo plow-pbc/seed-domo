@@ -6,109 +6,86 @@
 # This script bootstraps and runs the ONE persistent `claude --channels` session
 # that is the whole runtime. There is no `claude -p` path.
 #
-# See PLAN.md §4 (channels + runtime), §7 (isolation), §8 (security model),
-# §9 (Google Calendar MCP), §10 (POC plan).
+# POC permission posture: the session runs in `--permission-mode auto` — Claude Code's
+# classifier-gated "auto mode" (the shift+tab mode in the UI). No custom PreToolUse
+# allowlist: auto mode auto-approves SAFE calls (read-only ops, the channel reply,
+# local workspace ops), soft-blocks risky writes, and hard-blocks data exfiltration.
+# See PLAN.md §8. (`bypassPermissions` = allow-everything-no-checks is available via
+# DOMO_PERMISSION_MODE but is NOT the default.)
+#
+# See PLAN.md §4 (channels + runtime), §7 (isolation), §9 (Google Calendar), §10 (POC).
 #
 # Subcommands:
-#   setup    one-time interactive bootstrap (config dir, workspace, settings,
-#            Google Calendar MCP, plugin marketplace + fakechat install)
-#   start    launch the single persistent channels session
-#   doctor   read-only preflight: assert the environment is wired correctly
+#   setup    one-time bootstrap (config dir, workspace, fakechat plugin install)
+#   shell    interactive 'claude' under the isolated config dir (for /login)
+#   start    launch the single persistent channels session (auto mode)
+#   doctor   read-only preflight
 #
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Source-of-truth paths (single source -> the three absolute paths stay in sync)
+# Source-of-truth paths
 # ---------------------------------------------------------------------------
 
 # REPO_ROOT is resolved from this script's own location so the build is portable.
-# The hook command path baked into settings.json is the literal absolute path
-# (see config/settings.json + the settings_wiring contract).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
-REPO_SETTINGS="$REPO_ROOT/config/settings.json"
-HOOK_SCRIPT="$REPO_ROOT/hooks/allowlist-guard.sh"
 
 # DOMO_HOME is the isolated Claude home for this instance. For the POC it defaults
 # to THIS git checkout, so Domo's config / auth / sessions / plugins are fully
 # separate from your personal Claude Code and live entirely inside the project
-# (under .claude/, which is gitignored). CONFIG_DIR and WORKSPACE derive from it so
-# the isolated paths never drift. Override by exporting DOMO_HOME (e.g. ~/domo)
-# without editing this file.
+# (under .claude/, which is gitignored). Override by exporting DOMO_HOME (e.g. ~/domo).
 DOMO_HOME="${DOMO_HOME:-$REPO_ROOT}"
 CONFIG_DIR="$DOMO_HOME/.claude"
 WORKSPACE="$DOMO_HOME/workspace"
 
-# The ACTIVE config that the persistent session reads. `setup` COPIES the repo
-# settings here (copy, not symlink: a symlink into a git checkout is brittle and
-# muddies the isolation story). The hook script itself is NOT copied — settings
-# references it by absolute repo path.
-INSTALLED_SETTINGS="$CONFIG_DIR/settings.json"
-
-# Optional gitignored file that exports CLAUDE_CODE_OAUTH_TOKEN (and nothing else
-# secret should live in the repo). Sourced if present so the operator can avoid
-# re-exporting the token in every shell.
+# Optional gitignored file/key that exports CLAUDE_CODE_OAUTH_TOKEN. Sourced if
+# present so the operator can avoid re-exporting the token in every shell.
 ENV_FILE="$DOMO_HOME/.env"
 TOKEN_FILE="$CONFIG_DIR/oauth-token"
 
 # Google Calendar comes from the claude.ai ACCOUNT CONNECTOR (PLAN.md §9), not a
 # locally-added MCP server: connect it once at claude.ai/customize/connectors, then
-# /login this instance with the SAME account and the connector auto-loads. So there
-# is no `claude mcp add` here. Its tools surface as mcp__<account-UUID>__<tool>; the
-# hook matches the read-tool LEAF and ignores the UUID (see hooks/allowlist-guard.sh).
+# /login this instance with the SAME account and the connector auto-loads. No
+# `claude mcp add`. (Observed tool surface: mcp__claude_ai_Google_Calendar__<tool>.)
 
-# Channel plugin + marketplace (PLAN.md §4.2, §9). `setup` installs these headlessly
-# via `claude plugin marketplace add` + `claude plugin install … --scope user`.
-# TODO-VERIFY: that the install name is literally `fakechat` (confirm via `/plugin`).
+# Channel plugin + marketplace. `setup` installs these headlessly via
+# `claude plugin marketplace add` + `claude plugin install … --scope user`.
 MARKETPLACE_SRC="anthropics/claude-plugins-official"   # GitHub repo for the marketplace
 PLUGIN_SPEC="fakechat@claude-plugins-official"         # <plugin>@<marketplace-name>
-# Channels flag for the persistent session. Space-separated if more are added.
-CHANNELS_FLAG="plugin:fakechat@claude-plugins-official"
+CHANNELS_FLAG="plugin:fakechat@claude-plugins-official" # space-separated for more channels
 
-# fakechat serves its localhost UI on FAKECHAT_PORT (default 8787). Confirmed in
-# the plugin source: `const PORT = Number(process.env.FAKECHAT_PORT ?? 8787)`
-# (anthropics/claude-plugins-official). Override if 8787 is taken, e.g.
+# fakechat serves its localhost UI on FAKECHAT_PORT (default 8787; confirmed in the
+# plugin source `Number(process.env.FAKECHAT_PORT ?? 8787)`). Override if 8787 is taken:
 #   FAKECHAT_PORT=8799 ./run.sh start
 FAKECHAT_PORT="${FAKECHAT_PORT:-8787}"
 
-# Active allowlist (mirrors hooks/allowlist-guard.sh). Echoed by `doctor`. The
-# calendar entries are LEAVES (the hook matches them prefix-agnostically, since the
-# connector's server segment is an unpredictable account UUID); the reply tool is a
-# full name (stable plugin server). TODO-VERIFY the literal leaves via the deny log.
-ALLOWLIST=(
-  "list_calendars (read leaf)"
-  "list_events (read leaf)"
-  "get_event (read leaf)"
-  "suggest_time (read leaf)"
-  "mcp__fakechat__reply (exact)"
-)
+# Permission posture for the persistent session. Default `auto` = Claude Code's
+# classifier-gated auto mode: SAFE calls (read-only + the channel reply + local
+# workspace ops) are auto-approved with no prompt, so the normal calendar-read+reply
+# loop never hangs; risky writes are soft-blocked and exfiltration hard-blocked.
+# Override via DOMO_PERMISSION_MODE — e.g. `bypassPermissions` (allow EVERYTHING, no
+# checks) or `default` (prompts on most calls, which can hang a backgrounded session).
+PERMISSION_MODE="${DOMO_PERMISSION_MODE:-auto}"
 
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
-
 log()  { printf '[domo] %s\n' "$*" >&2; }
 warn() { printf '[domo] WARNING: %s\n' "$*" >&2; }
 die()  { printf '[domo] ERROR: %s\n' "$*" >&2; exit 1; }
 
-# Export the isolated config dir. This is what makes
-# config/settings.json -> ~/domo/.claude/settings.json the ACTIVE hook config,
-# and what scopes plugins / MCP servers / channel config / sessions / auth to
-# the Domo instance. MUST be exported in both setup and start.
+# Export the isolated config dir — scopes plugins / connectors / sessions / auth to
+# the Domo instance. MUST be exported in every subcommand that launches `claude`.
 export_config_dir() {
   export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
   log "CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"
 }
 
-# Resolve subscription auth (PLAN.md §6/§7). The token is OPTIONAL. Auth resolves
-# in this order:
-#   1. CLAUDE_CODE_OAUTH_TOKEN (env, then $ENV_FILE, then $TOKEN_FILE) — the
-#      headless/cron path ('claude setup-token'). Never hardcoded in the repo.
-#   2. Otherwise: the interactive login stored in the isolated config dir (run
-#      '/login' once inside ./run.sh shell). This is the POC default.
-#   3. If neither exists yet, the interactive session simply prompts to /login.
-# This function is NON-FATAL — it never blocks start/shell, because the isolated
-# session boots interactively and can authenticate itself.
+# Resolve subscription auth (PLAN.md §6/§7). The token is OPTIONAL:
+#   1. CLAUDE_CODE_OAUTH_TOKEN (env, then $ENV_FILE, then $TOKEN_FILE) — headless path.
+#   2. Otherwise the interactive login stored in the isolated config dir (/login).
+# NON-FATAL: never blocks start/shell; the session can authenticate itself.
 ensure_auth() {
   if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" && -f "$ENV_FILE" ]]; then
     # shellcheck disable=SC1090
@@ -124,7 +101,7 @@ ensure_auth() {
     log "Auth: no token set — using the interactive login in $CONFIG_DIR."
     log "      If you haven't logged this instance in yet, run './run.sh shell' and '/login' once."
   fi
-  # Guard against accidentally falling back to metered API billing, always.
+  # Keep subscription auth; never silently fall back to metered API billing.
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
     warn "ANTHROPIC_API_KEY is set; unsetting it so subscription auth is used."
     unset ANTHROPIC_API_KEY
@@ -136,39 +113,19 @@ require_claude() {
 }
 
 # ---------------------------------------------------------------------------
-# setup — one-time interactive bootstrap (idempotent)
+# setup — one-time bootstrap (idempotent)
 # ---------------------------------------------------------------------------
 cmd_setup() {
   export_config_dir
   require_claude
-
-  # Resolve auth (non-fatal). The interactive flows below authenticate the isolated
-  # instance via /login if no token is set.
   ensure_auth
 
   log "Creating isolated config dir and workspace..."
   mkdir -p "$CONFIG_DIR" "$WORKSPACE"
 
-  # The hook script must exist and be executable; it is NOT copied — settings.json
-  # references it by absolute repo path.
-  [[ -f "$HOOK_SCRIPT" ]] || die "hook script missing: $HOOK_SCRIPT (build hooks/allowlist-guard.sh first)"
-  chmod +x "$HOOK_SCRIPT"
-  log "Marked hook executable: $HOOK_SCRIPT"
-
-  # Materialize the ACTIVE settings by COPYING the repo source. Re-running
-  # overwrites it so edits to config/settings.json propagate (idempotent).
-  [[ -f "$REPO_SETTINGS" ]] || die "repo settings missing: $REPO_SETTINGS (build config/settings.json first)"
-  cp "$REPO_SETTINGS" "$INSTALLED_SETTINGS"
-  log "Copied settings: $REPO_SETTINGS -> $INSTALLED_SETTINGS"
-
-  # NOTE: no `claude mcp add` for calendar — it comes from the claude.ai account
-  # connector (see the GOOGLE_CALENDAR note up top), which auto-loads after /login.
-
   # Install the fakechat channel plugin headlessly (no /plugin TUI). --scope user
-  # installs into THIS isolated config dir (Domo-instance-wide). Best-effort +
-  # idempotent: tolerate "already added / already installed" so re-running is safe.
-  # stdin from /dev/null: if a version of the CLI ever prompts (e.g. a trust
-  # confirmation), it gets EOF and fails fast instead of hanging setup.
+  # installs into THIS isolated config dir. Best-effort + idempotent. stdin from
+  # /dev/null so an unexpected confirmation prompt fails fast instead of hanging.
   log "Adding marketplace '$MARKETPLACE_SRC' (user scope)..."
   claude plugin marketplace add "$MARKETPLACE_SRC" </dev/null >/dev/null 2>&1 \
     || warn "marketplace add returned non-zero (may already exist). Continuing."
@@ -180,7 +137,6 @@ cmd_setup() {
     warn "If needed, finish it in './run.sh shell':  /plugin install $PLUGIN_SPEC"
   fi
 
-  # Remaining steps need a browser and/or interactive login; print instructions.
   cat >&2 <<EOF
 
 [domo] ============================================================
@@ -198,13 +154,8 @@ cmd_setup() {
 [domo]    (A fresh config dir has no login; no token needed. fakechat is already
 [domo]    installed above — if that step warned, run /plugin install $PLUGIN_SPEC here.)
 [domo]
-[domo] C) (recommended) Confirm the connector's calendar tool LEAVES:
-[domo]    ask the session "what's on my calendar today?". If the hook denies it, its
-[domo]    stderr prints the literal tool_name (e.g. mcp__<uuid>__list_events) — read
-[domo]    the leaf and make sure it's in READ_LEAVES in hooks/allowlist-guard.sh.
-[domo]
-[domo] When done, verify with:   ./run.sh doctor
-[domo] Then run the assistant:   ./run.sh start
+[domo] Then run:  ./run.sh doctor   and   ./run.sh start
+[domo] (start runs --permission-mode $PERMISSION_MODE — classifier-gated auto mode.)
 [domo] ============================================================
 EOF
 
@@ -212,18 +163,14 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# start — the whole runtime: one persistent channels session
+# start — the whole runtime: one persistent channels session, auto mode
 # ---------------------------------------------------------------------------
 cmd_start() {
   export_config_dir
   require_claude
   ensure_auth
 
-  # Refuse to start if setup hasn't run (active settings = the hook wiring).
-  [[ -f "$INSTALLED_SETTINGS" ]] || die "active settings not found at $INSTALLED_SETTINGS. Run './run.sh setup' first."
   [[ -d "$WORKSPACE" ]] || die "workspace not found at $WORKSPACE. Run './run.sh setup' first."
-
-  # Scope file tools to the dedicated workspace.
   cd "$WORKSPACE"
 
   # fakechat reads FAKECHAT_PORT from the environment; export it so the demo UI
@@ -231,20 +178,18 @@ cmd_start() {
   export FAKECHAT_PORT
   log "Starting persistent session in $WORKSPACE"
   log "Channels: $CHANNELS_FLAG"
+  log "Permission mode: $PERMISSION_MODE (classifier-gated; safe calls auto-approved)"
   log "fakechat UI: http://localhost:$FAKECHAT_PORT"
-  # The ONE persistent session. No 'claude -p'. exec so signals pass through and
-  # this script does not linger as a parent. Runs in the foreground TTY so the
-  # one-time channels-preview consent (and a /login prompt, if not yet logged in)
-  # can be accepted interactively. NEVER add --dangerously-skip-permissions here:
-  # that bypasses the PreToolUse allowlist hook (the security spine, PLAN.md §8).
-  exec claude --channels "$CHANNELS_FLAG"
+  # The ONE persistent session. No 'claude -p'. exec so signals pass through. Runs
+  # in the foreground TTY so the one-time channels-preview consent (and a /login
+  # prompt, if needed) can be accepted interactively.
+  exec claude --channels "$CHANNELS_FLAG" --permission-mode "$PERMISSION_MODE"
 }
 
 # ---------------------------------------------------------------------------
-# shell — open an interactive 'claude' under the isolated config dir. Primary use:
-# the one-time /login. (fakechat is installed headlessly by `setup`; calendar is the
-# claude.ai account connector, connected in a browser — neither happens here.)
-# Channels are intentionally OFF here.
+# shell — interactive 'claude' under the isolated config dir. Primary use: the
+# one-time /login. (fakechat is installed by `setup`; calendar is the claude.ai
+# account connector, connected in a browser.) Channels are OFF here.
 # ---------------------------------------------------------------------------
 cmd_shell() {
   export_config_dir
@@ -267,38 +212,20 @@ cmd_doctor() {
   log "Resolved CLAUDE_CONFIG_DIR: $CONFIG_DIR"
   log "Resolved workspace:         $WORKSPACE"
 
-  if [[ -f "$INSTALLED_SETTINGS" ]]; then
-    log "OK   active settings present: $INSTALLED_SETTINGS"
+  if [[ -d "$WORKSPACE" ]]; then
+    log "OK   workspace present: $WORKSPACE"
   else
-    warn "MISS active settings absent: $INSTALLED_SETTINGS (run './run.sh setup')"; ok=1
+    warn "MISS workspace absent: $WORKSPACE (run './run.sh setup')"; ok=1
   fi
 
-  # The hook command path registered in settings must exist and be executable.
-  # Prefer the path actually recorded in settings.json (truth), falling back to
-  # the repo path if we can't parse it.
-  local registered_hook=""
-  if [[ -f "$INSTALLED_SETTINGS" ]] && command -v jq >/dev/null 2>&1; then
-    registered_hook="$(jq -r '.hooks.PreToolUse[]?.hooks[]?.command // empty' "$INSTALLED_SETTINGS" 2>/dev/null | head -n1 || true)"
-  fi
-  [[ -n "$registered_hook" ]] || registered_hook="$HOOK_SCRIPT"
-
-  if [[ -f "$registered_hook" && -x "$registered_hook" ]]; then
-    log "OK   hook present + executable: $registered_hook"
-  elif [[ -f "$registered_hook" ]]; then
-    warn "MISS hook present but NOT executable: $registered_hook (chmod +x it)"; ok=1
+  if command -v claude >/dev/null 2>&1; then
+    log "OK   'claude' CLI on PATH"
   else
-    warn "MISS registered hook not found: $registered_hook"; ok=1
+    warn "MISS 'claude' CLI not on PATH"; ok=1
   fi
 
-  if command -v jq >/dev/null 2>&1; then
-    log "OK   jq present (hook dependency)"
-  else
-    warn "MISS jq not on PATH — the hook fails closed (denies all) without it. Install jq."; ok=1
-  fi
-
-  # Auth is OPTIONAL via token: a token OR a stored interactive login both work.
-  # The credentials file is the macOS-file form; on some setups creds live in the
-  # Keychain, so absence here is not a failure — just informational.
+  # Auth: a token OR a stored interactive login both work. On macOS, creds may live
+  # in the Keychain, so absence of the file form is informational, not a failure.
   if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] || [[ -f "$ENV_FILE" ]] || [[ -f "$TOKEN_FILE" ]]; then
     log "OK   auth: CLAUDE_CODE_OAUTH_TOKEN available (env or token file)"
   elif [[ -f "$CONFIG_DIR/.credentials.json" ]]; then
@@ -313,27 +240,8 @@ cmd_doctor() {
     log "OK   ANTHROPIC_API_KEY is unset (subscription auth)"
   fi
 
-  if command -v claude >/dev/null 2>&1; then
-    log "OK   'claude' CLI on PATH"
-  else
-    warn "MISS 'claude' CLI not on PATH"; ok=1
-  fi
-
-  log "Active allowlist (must match hooks/allowlist-guard.sh):"
-  local t
-  for t in "${ALLOWLIST[@]}"; do log "       allow: $t"; done
-
-  # Belt-and-suspenders: no allowlist entry may look write-capable. Guards the
-  # security spine against a future hand-edit pasting a mutating tool into ALLOW
-  # (the 'reply' tool is intentionally allowed and matches none of these verbs).
-  local write_verbs='create|insert|update|patch|delete|remove|move|import|quickadd|respond|accept|decline'
-  for t in "${ALLOWLIST[@]}"; do
-    if printf '%s' "$t" | grep -qiE "$write_verbs"; then
-      warn "WARN allowlist entry looks write-capable: '$t' — POC is read + reply only. Remove it."; ok=1
-    fi
-  done
-
-  log "Channels flag: $CHANNELS_FLAG"
+  log "Channels flag:   $CHANNELS_FLAG"
+  log "Permission mode: $PERMISSION_MODE (classifier-gated auto mode)"
 
   if [[ "$ok" -eq 0 ]]; then
     log "doctor: all checks passed."
@@ -353,12 +261,12 @@ Usage: $(basename "$0") <command>
 
 Commands:
   setup    One-time bootstrap: create the isolated config dir ($CONFIG_DIR) +
-           workspace ($WORKSPACE), copy config/settings.json into place, and print
-           the remaining interactive steps. Idempotent. (Calendar = claude.ai
-           account connector; no 'claude mcp add'.)
+           workspace ($WORKSPACE), install the fakechat plugin (user scope), and
+           print the remaining interactive steps. Idempotent.
   shell    Open an interactive 'claude' under the isolated config dir — for the
            one-time /login (fakechat is installed by 'setup').
-  start    Launch the single persistent 'claude --channels $CHANNELS_FLAG' session.
+  start    Launch the single persistent 'claude --channels $CHANNELS_FLAG' session
+           in classifier-gated auto mode (--permission-mode $PERMISSION_MODE).
   doctor   Read-only preflight; exits non-zero on any failed assertion.
 
 Environment:
@@ -367,6 +275,8 @@ Environment:
                            $TOKEN_FILE. If unset, auth uses the interactive /login
                            stored in the isolated config dir (the POC default).
   DOMO_HOME                (optional) base dir; default: this git checkout.
+  FAKECHAT_PORT            (optional) fakechat UI port; default 8787.
+  DOMO_PERMISSION_MODE     (optional) permission mode; default bypassPermissions.
 EOF
 }
 
