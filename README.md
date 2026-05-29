@@ -75,6 +75,13 @@ hook by its **absolute repo path**
 `chmod +x`'s it. `setup` is idempotent — re-running overwrites the copied
 `settings.json` so edits to the repo source propagate.
 
+> **One leak in the isolation:** the Google Calendar **connector** is
+> **account-scoped**, not config-dir-scoped — there's no per-config-dir opt-out
+> (Claude issue #58453). So this instance inherits *all* connectors on the account
+> you `/login` with, not just Calendar. Config, plugins, sessions, and channel
+> config stay isolated; connectors don't. The default-deny hook is what keeps Domo
+> from actually *using* any non-calendar connector.
+
 ---
 
 ## One-time interactive setup (cannot be headless)
@@ -93,11 +100,21 @@ This (idempotent):
 - `mkdir -p $DOMO_HOME/.claude $DOMO_HOME/workspace`,
 - `chmod +x` the hook,
 - **copies** `config/settings.json` → `$DOMO_HOME/.claude/settings.json`,
-- runs
-  `claude mcp add --transport http google-calendar https://calendarmcp.googleapis.com/mcp/v1`,
 - then prints the remaining interactive steps below.
 
-### 2. Open the isolated session and log in
+(No `claude mcp add` — calendar comes from the claude.ai account connector in step 2.)
+
+### 2. Connect Google Calendar at the account level (once)
+
+In a browser, go to **[claude.ai/customize/connectors](https://claude.ai/customize/connectors)**
+→ **Google Calendar** → **Connect**, using the **same Anthropic account** you'll
+`/login` with in step 3. Connectors are **account-scoped**, so once connected they
+auto-load into any Claude Code session on that account — including this isolated
+instance. No `claude mcp add`, no GCP OAuth client. (Requires a Pro/Max/Team plan;
+the first-party `calendarmcp.googleapis.com` MCP is *not* usable from Claude Code —
+it fails on dynamic client registration. See PLAN.md §9.)
+
+### 3. Open the isolated session and log in
 
 ```bash
 ./run.sh shell
@@ -105,31 +122,17 @@ This (idempotent):
 
 `shell` opens an interactive `claude` under `CLAUDE_CONFIG_DIR=$DOMO_HOME/.claude`
 (channels off, so it works before fakechat is installed). A fresh config dir does
-**not** inherit your personal login, so authenticate this instance once:
+**not** inherit your personal login, so authenticate this instance once — with the
+**same account that holds the Calendar connector**:
 
 ```
 /login
 ```
 
-The browser-OAuth credentials are stored **in the isolated dir** and reused by the
-persistent session — so no `CLAUDE_CODE_OAUTH_TOKEN` is needed for the POC. (A
-`setup-token` is only worth it later for a fully unattended/cron tier; see
-[Auth](#auth-token-optional).)
-
-### 3. Complete the Google Calendar `/mcp` OAuth browser flow (once)
-
-Still inside `./run.sh shell` — there is **no headless registration** for the
-Google connector:
-
-```
-/mcp
-```
-
-Complete the Google OAuth browser flow for `google-calendar`. The stored token
-lands in the isolated config dir and is reused by the persistent session (PLAN.md
-§9). Read-only scopes are expected:
-`calendar.calendarlist.readonly`, `calendar.events.readonly`,
-`calendar.events.freebusy`.
+Credentials are stored **in the isolated dir** and reused by the persistent session
+— so no `CLAUDE_CODE_OAUTH_TOKEN` is needed for the POC. The Calendar connector
+auto-loads on this login. (A `setup-token` is only worth it later for a fully
+unattended/cron tier; see [Auth](#auth-token-optional).)
 
 ### 4. Install the fakechat channel plugin (once)
 
@@ -141,6 +144,13 @@ Still inside `./run.sh shell`:
 ```
 
 Both land in `$DOMO_HOME/.claude`. Then exit the shell — you're ready to `start`.
+
+> **Connector tool names.** Connector tools surface to the hook as
+> `mcp__<account-UUID>__<tool>`, where the UUID is account-specific and
+> unpredictable. The allowlist hook therefore matches the **read-tool leaf**
+> (`list_events`, `get_event`, …) and ignores the UUID. If a calendar query is
+> denied, the hook's stderr prints the literal `tool_name` — read the leaf and
+> confirm it's in `READ_LEAVES` in `hooks/allowlist-guard.sh`.
 
 > **Channels preview consent.** The first time the persistent session enables
 > `--channels`, Claude may ask you to accept the research-preview consent. Because
@@ -222,22 +232,21 @@ shows in the browser.
 
 The `PreToolUse` hook (`matcher: "*"`, `timeout: 10`) is **default-deny**:
 
-- **Allow** (stdout JSON + `exit 0`) only for the explicit allowlist:
-  - `mcp__google-calendar__list_calendars`
-  - `mcp__google-calendar__list_events`
-  - `mcp__google-calendar__get_event`
-  - `mcp__google-calendar__suggest_time` *(read-only — see verify note)*
-  - `mcp__fakechat__reply`
+- **Allow** (stdout JSON + `exit 0`) only for:
+  - the calendar **read leaves** — `list_calendars`, `list_events`, `get_event`,
+    `suggest_time` — matched **prefix-agnostically** (any `mcp__<server-or-UUID>__<leaf>`),
+    because the connector's server segment is an unpredictable account UUID;
+  - the channel reply tool `mcp__fakechat__reply` (exact match — stable plugin name).
 - **Deny** everything else (stderr + `exit 2`, the guaranteed no-prompt
-  hard-block per bug #52822). This includes `Bash`, `Write`, `Edit`, `WebFetch`,
-  `Read`, `Glob`, `Grep`, `Task`, and — most importantly — the calendar **write**
-  tools, which are **NEVER** allowed:
-  - `mcp__google-calendar__create_event`
-  - `mcp__google-calendar__update_event`
-  - `mcp__google-calendar__delete_event`
-  - `mcp__google-calendar__respond_to_event`
+  hard-block per bug #52822). This includes every non-MCP tool (`Bash`, `Write`,
+  `Edit`, `WebFetch`, `Read`, `Glob`, `Grep`, `Task`), every **other** account
+  connector's tools, and — most importantly — the calendar **write** leaves, which
+  are **NEVER** allowed: `create_event`, `update_event`, `delete_event`,
+  `respond_to_event`.
 - **Fail-closed:** empty stdin, missing/unparseable `tool_name`, or missing `jq`
   → deny. The hook never emits `permissionDecision:deny` JSON and never exits 1.
+- Because connectors are **account-scoped** (no per-config-dir opt-out), this hook
+  is also what stops Domo from using any *other* connector on your account.
 
 To smoke-test the spine: ask Domo to do something off-allowlist (e.g. "run `ls`"
 or "create an event") and confirm it is **blocked with no prompt**, while the
@@ -251,30 +260,28 @@ The following were **unverified at build time**. The hook keeps the allowlist as
 explicit, clearly-commented array so each is a one-line fix. Check these once during
 the interactive setup:
 
-- **fakechat `reply` tool name.** Assumed `mcp__fakechat__reply` (channels are MCP
-  servers; tools surface as `mcp__<server>__<tool>`). After install, trigger a reply
-  and read the session/hook log for the literal `tool_name`. If wrong, replies are
-  silently denied (no reply appears in the UI). Fix the one channel-reply line in the
-  hook's ALLOW array.
-- **Google Calendar MCP server prefix.** Assumed `mcp__google-calendar__` from the
-  server name `google-calendar` in the `mcp add` command. If you named the server
-  differently, the whole prefix shifts and calendar reads are silently denied. Confirm
-  via `/mcp` or hook logs; fix all five calendar lines (grouped under a PREFIX comment).
+- **Calendar tool leaves.** The connector's read-tool leaf names
+  (`list_calendars` / `list_events` / `get_event` / `suggest_time`) aren't documented
+  for connectors. Ask "what's on my calendar today?"; if denied, the hook's stderr
+  prints the literal `tool_name` (e.g. `mcp__<uuid>__list_events`) — read the leaf and
+  confirm it's in `READ_LEAVES`. Wrong leaf → calendar reads silently denied.
+- **fakechat `reply` tool name.** Assumed `mcp__fakechat__reply` (matched exactly).
+  After install, trigger a reply and read the log for the literal `tool_name`. If
+  wrong, replies are silently denied (no reply in the UI). Fix `REPLY_TOOLS` in the hook.
 - **Plugin install name.** Assumed `fakechat@claude-plugins-official` (PLAN.md §9).
-  Confirm via `/plugin` listing. If different, fix the `--channels` flag in
-  `run.sh start` **and** re-verify the resulting reply tool name.
+  Confirm via `/plugin`. If different, fix `CHANNELS_FLAG` in `run.sh` **and** re-verify
+  the reply tool name.
 - **`allow` may still prompt (bug #52822, ~v2.1.119).** Mitigated by the asymmetric
   strategy (allow = stdout-JSON + exit 0; deny = exit 2). Verify on your installed
   version that allowlisted tools do **not** raise a prompt. If they do, you are on a
   buggy version — flag it. We deliberately never use `permissionDecision:deny` JSON.
-- **`suggest_time` read-only classification.** Included in ALLOW as read-only
-  (PLAN.md §9), but flagged. If it turns out to mutate, drop it from ALLOW (one line).
-  `create_event` / `update_event` / `delete_event` / `respond_to_event` are **NEVER**
+- **`suggest_time` read-only classification.** Allowed as a read leaf (PLAN.md §9).
+  If it turns out to mutate, drop it from `READ_LEAVES`. The write leaves
+  (`create_event` / `update_event` / `delete_event` / `respond_to_event`) are **NEVER**
   allowed under any interpretation.
-- **Google Calendar MCP endpoint recency.** Use
-  `https://calendarmcp.googleapis.com/mcp/v1` exactly; re-confirm at build. The OAuth
-  `/mcp` browser flow must be done once interactively (no headless registration); the
-  token is then reused by the persistent session.
+- **Leaf-match is prefix-agnostic.** Acceptable because the isolated instance's only
+  connected surface is Calendar + fakechat. To harden, pin the discovered UUID by
+  switching a `READ_LEAVES` entry to a full `mcp__<uuid>__<leaf>` exact match.
 
 ---
 

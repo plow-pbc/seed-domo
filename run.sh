@@ -51,9 +51,11 @@ INSTALLED_SETTINGS="$CONFIG_DIR/settings.json"
 ENV_FILE="$DOMO_HOME/.env"
 TOKEN_FILE="$CONFIG_DIR/oauth-token"
 
-# Google Calendar MCP (PLAN.md §9). Server name -> tool prefix mcp__google-calendar__.
-GOOGLE_MCP_NAME="google-calendar"
-GOOGLE_MCP_URL="https://calendarmcp.googleapis.com/mcp/v1"
+# Google Calendar comes from the claude.ai ACCOUNT CONNECTOR (PLAN.md §9), not a
+# locally-added MCP server: connect it once at claude.ai/customize/connectors, then
+# /login this instance with the SAME account and the connector auto-loads. So there
+# is no `claude mcp add` here. Its tools surface as mcp__<account-UUID>__<tool>; the
+# hook matches the read-tool LEAF and ignores the UUID (see hooks/allowlist-guard.sh).
 
 # Channels flag for the persistent session (PLAN.md §4.2, §9).
 # TODO-VERIFY: that the plugin install name is literally `fakechat` and the
@@ -67,16 +69,16 @@ CHANNELS_FLAG="plugin:fakechat@claude-plugins-official"
 #   FAKECHAT_PORT=8799 ./run.sh start
 FAKECHAT_PORT="${FAKECHAT_PORT:-8787}"
 
-# Active allowlist (mirrors hooks/allowlist-guard.sh). Echoed by `doctor` so the
-# operator can eyeball what is permitted without opening the hook.
-# TODO-VERIFY at setup: the literal tool_names as seen by PreToolUse — the
-# fakechat `reply` tool name and the google-calendar server prefix.
+# Active allowlist (mirrors hooks/allowlist-guard.sh). Echoed by `doctor`. The
+# calendar entries are LEAVES (the hook matches them prefix-agnostically, since the
+# connector's server segment is an unpredictable account UUID); the reply tool is a
+# full name (stable plugin server). TODO-VERIFY the literal leaves via the deny log.
 ALLOWLIST=(
-  "mcp__google-calendar__list_calendars"
-  "mcp__google-calendar__list_events"
-  "mcp__google-calendar__get_event"
-  "mcp__google-calendar__suggest_time"   # read-only per PLAN.md §9; drop if it mutates
-  "mcp__fakechat__reply"                  # the channel reply tool — TODO-VERIFY exact name
+  "list_calendars (read leaf)"
+  "list_events (read leaf)"
+  "get_event (read leaf)"
+  "suggest_time (read leaf)"
+  "mcp__fakechat__reply (exact)"
 )
 
 # ---------------------------------------------------------------------------
@@ -157,47 +159,40 @@ cmd_setup() {
   cp "$REPO_SETTINGS" "$INSTALLED_SETTINGS"
   log "Copied settings: $REPO_SETTINGS -> $INSTALLED_SETTINGS"
 
-  # Add the Google Calendar MCP server (PLAN.md §9). Idempotent-ish: tolerate the
-  # "already exists" case so re-running setup doesn't abort.
-  log "Adding Google Calendar MCP server '$GOOGLE_MCP_NAME'..."
-  if claude mcp add --transport http "$GOOGLE_MCP_NAME" "$GOOGLE_MCP_URL"; then
-    log "MCP server added."
-  else
-    warn "claude mcp add returned non-zero (server may already exist). Continuing."
-  fi
+  # NOTE: no `claude mcp add` for calendar — it comes from the claude.ai account
+  # connector (see the GOOGLE_CALENDAR note up top), which auto-loads after /login.
 
-  # Plugin marketplace + fakechat install. These are interactive in-session slash
-  # commands and cannot be reliably scripted headlessly; print exact instructions.
+  # Remaining steps are interactive (browser + in-session slash commands) and
+  # cannot be scripted headlessly; print exact instructions.
   cat >&2 <<EOF
 
 [domo] ============================================================
 [domo] REMAINING ONE-TIME INTERACTIVE STEPS (cannot be scripted)
 [domo] ============================================================
-[domo] These run INSIDE an isolated 'claude' session. Open one with:
 [domo]
+[domo] 0) Connect Google Calendar ONCE at the ACCOUNT level (in a browser):
+[domo]      https://claude.ai/customize/connectors  -> Google Calendar -> Connect
+[domo]    Use the SAME Anthropic account you'll /login below. Account-scoped, so it
+[domo]    then auto-loads into this isolated instance (no 'claude mcp add').
+[domo]
+[domo]    The rest run INSIDE an isolated 'claude' session. Open one with:
 [domo]      ./run.sh shell        # interactive 'claude' under CLAUDE_CONFIG_DIR=$CONFIG_DIR
-[domo]
-[domo] (Everything you do there lands in the Domo instance, separate from your
-[domo] personal Claude Code.)
+[domo]    (Everything there lands in the Domo instance, separate from your personal CC.)
 [domo]
 [domo] 1) Log this instance in (no token needed — a fresh config dir has no login):
-[domo]      /login            # browser OAuth; credentials stored in the isolated dir
+[domo]      /login            # use the SAME account that holds the Calendar connector
 [domo]
-[domo] 2) Google Calendar OAuth (browser flow — no headless registration):
-[domo]      /mcp              # complete the google-calendar browser OAuth ONCE
-[domo]    Read-only scopes only (calendarlist.readonly / events.readonly / freebusy).
-[domo]
-[domo] 3) Install the fakechat channel plugin:
+[domo] 2) Install the fakechat channel plugin:
 [domo]      /plugin marketplace add anthropics/claude-plugins-official
 [domo]      /plugin install fakechat@claude-plugins-official
 [domo]    TODO-VERIFY: that the install name is literally 'fakechat' (check /plugin).
-[domo]    If it differs, update CHANNELS_FLAG in run.sh AND the reply tool_name in
+[domo]    If it differs, update CHANNELS_FLAG in run.sh AND REPLY_TOOLS in
 [domo]    hooks/allowlist-guard.sh.
 [domo]
-[domo] 4) (recommended) Capture the literal tool_names PreToolUse sees:
-[domo]    trigger a calendar read and a fakechat reply once, then inspect the hook
-[domo]    log to confirm 'mcp__google-calendar__*' and 'mcp__fakechat__reply'.
-[domo]    Adjust the ALLOW array in hooks/allowlist-guard.sh if they differ.
+[domo] 3) (recommended) Confirm the connector's calendar tool LEAVES:
+[domo]    ask the session "what's on my calendar today?". If the hook denies it, its
+[domo]    stderr prints the literal tool_name (e.g. mcp__<uuid>__list_events) — read
+[domo]    the leaf and make sure it's in READ_LEAVES in hooks/allowlist-guard.sh.
 [domo]
 [domo] When done, verify with:   ./run.sh doctor
 [domo] Then run the assistant:   ./run.sh start
@@ -238,7 +233,8 @@ cmd_start() {
 
 # ---------------------------------------------------------------------------
 # shell — open an interactive 'claude' under the isolated config dir. This is the
-# session where you do the one-time /login, /mcp OAuth, and /plugin install.
+# session where you do the one-time /login and /plugin install fakechat. (Calendar
+# is the claude.ai account connector — connected in a browser, not here.)
 # Channels are intentionally OFF here so it works before fakechat is installed.
 # ---------------------------------------------------------------------------
 cmd_shell() {
@@ -248,7 +244,7 @@ cmd_shell() {
   [[ -d "$WORKSPACE" ]] || mkdir -p "$WORKSPACE"
   cd "$WORKSPACE"
   log "Opening interactive Domo session (CLAUDE_CONFIG_DIR=$CONFIG_DIR)."
-  log "One-time steps in here: /login, then /mcp (Google OAuth), then /plugin install fakechat."
+  log "One-time steps in here: /login (same account as the Calendar connector), then /plugin install fakechat."
   exec claude
 }
 
@@ -348,10 +344,11 @@ Usage: $(basename "$0") <command>
 
 Commands:
   setup    One-time bootstrap: create the isolated config dir ($CONFIG_DIR) +
-           workspace ($WORKSPACE), copy config/settings.json into place, add the
-           Google Calendar MCP, and print the remaining interactive steps. Idempotent.
+           workspace ($WORKSPACE), copy config/settings.json into place, and print
+           the remaining interactive steps. Idempotent. (Calendar = claude.ai
+           account connector; no 'claude mcp add'.)
   shell    Open an interactive 'claude' under the isolated config dir — where you
-           do the one-time /login, /mcp OAuth, and /plugin install fakechat.
+           do the one-time /login and /plugin install fakechat.
   start    Launch the single persistent 'claude --channels $CHANNELS_FLAG' session.
   doctor   Read-only preflight; exits non-zero on any failed assertion.
 

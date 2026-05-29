@@ -58,47 +58,39 @@ set -u
 # To extend later: add one fully-qualified tool_name string per line below,
 # each with a comment explaining why it is safe. Nothing else needs to change.
 #
-# ----- TODO-VERIFY: MCP tool naming (do this once during `run.sh setup`) ------
-# Channels and MCP servers surface tools to PreToolUse as:
-#     mcp__<server-name>__<tool-name>
-# Two prefixes below are ASSUMPTIONS that MUST be confirmed at setup time by
-# reading the literal tool_name from the session/hook log:
+# MCP tools surface to PreToolUse as:  mcp__<server-name>__<tool-name>
 #
-#   (A) Google Calendar MCP server prefix — assumed "google-calendar",
-#       derived from:
-#         claude mcp add --transport http google-calendar \
-#                 https://calendarmcp.googleapis.com/mcp/v1
-#       => prefix "mcp__google-calendar__". If the operator names the server
-#       differently, EVERY calendar entry's prefix shifts and calendar reads
-#       get silently denied (Claude can't answer "what's on my calendar").
-#       Verify via `/mcp` or the hook log, then fix the four lines below.
+# The Google Calendar tools come from the **claude.ai account CONNECTOR** (not a
+# locally-added MCP server), so <server-name> is an Anthropic-assigned **UUID**
+# that is account-specific, unpredictable, and CHANGES if the connector is
+# reconnected (Claude Code issues #22599/#22276). We therefore CANNOT hardcode the
+# full tool_name. Instead we match the **leaf** (the <tool-name> after the last
+# `__`) against a read-only allowlist and IGNORE the server/UUID segment.
 #
-#   (B) fakechat channel `reply` tool — assumed "mcp__fakechat__reply".
-#       Channels are MCP servers, so the reply tool should appear as
-#       mcp__<plugin>__reply. The plugin install name is assumed `fakechat`
-#       (PLAN.md §9). After `/plugin install fakechat@claude-plugins-official`,
-#       trigger a reply and read the literal tool_name from the log. If wrong,
-#       replies get DENIED — visible immediately (no reply appears in the UI).
-#       Fix the single REPLY line below.
-# -----------------------------------------------------------------------------
-ALLOW=(
-  # --- Google Calendar MCP: READ-ONLY tools (prefix TODO-VERIFY: see (A)) ---
-  "mcp__google-calendar__list_calendars"   # list the user's calendars (read)
-  "mcp__google-calendar__list_events"      # list events in a window   (read)
-  "mcp__google-calendar__get_event"        # fetch one event by id      (read)
-  "mcp__google-calendar__suggest_time"     # propose free slots — read-only per
-                                           #   PLAN.md §9. TODO-VERIFY: if this
-                                           #   ever MUTATES, delete this line.
+# Security note: leaf-matching is intentionally prefix-agnostic — ANY MCP server
+# exposing a tool whose leaf is one of these would be allowed. That is acceptable
+# here ONLY because this is an isolated instance whose connected surface is just
+# Calendar + the fakechat channel, and because every WRITE leaf and every non-MCP
+# tool (Bash/Write/Edit/WebFetch/Read/…) is still default-denied. To harden later,
+# pin the discovered UUID by switching a read entry to a full mcp__<uuid>__<leaf>.
+#
+# TODO-VERIFY (once): the exact leaf names aren't documented for connectors. Run a
+# calendar query in the session; if it's denied, THIS hook's stderr prints the
+# literal tool_name (see deny()), so you can read the real leaf and adjust below.
 
-  # --- fakechat channel: reply tool (name TODO-VERIFY: see (B)) -------------
+# Read-only Google Calendar tool LEAVES (server/UUID segment ignored).
+READ_LEAVES=(
+  list_calendars   # list the user's calendars (read)
+  list_events      # list events in a window   (read)
+  get_event        # fetch one event by id      (read)
+  suggest_time     # propose free slots — read-only per PLAN.md §9
+)
+# NEVER add WRITE leaves: create_event, update_event, delete_event, respond_to_event.
+
+# Channel reply tool(s). The channel is a LOCAL plugin (server segment = the plugin
+# name, NOT a UUID), so match exactly. TODO-VERIFY the literal name via the deny log.
+REPLY_TOOLS=(
   "mcp__fakechat__reply"                   # send Domo's reply back to the chat
-
-  # !!! NEVER add the calendar WRITE tools here under ANY interpretation: !!!
-  #     mcp__google-calendar__create_event
-  #     mcp__google-calendar__update_event
-  #     mcp__google-calendar__delete_event
-  #     mcp__google-calendar__respond_to_event
-  # The POC is strictly read-calendar + reply-to-owner (PLAN.md §8, §11, §12).
 )
 
 # -----------------------------------------------------------------------------
@@ -141,22 +133,40 @@ if [ "$JQ_RC" -ne 0 ] || [ -z "$TOOL_NAME" ]; then
   deny "could not parse a tool_name from PreToolUse input — failing closed"
 fi
 
-# -----------------------------------------------------------------------------
-# Allowlist membership test (exact string match).
-# -----------------------------------------------------------------------------
-for allowed in "${ALLOW[@]}"; do
-  if [ "$TOOL_NAME" = "$allowed" ]; then
-    # ALLOW path: documented stdout JSON + exit 0.
-    # hookEventName MUST be exactly "PreToolUse".
-    printf '%s\n' \
-      '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"on Domo allowlist"}}'
-    exit 0
-  fi
-done
+# ALLOW path: documented stdout JSON + exit 0. hookEventName MUST be "PreToolUse".
+allow() {
+  printf '%s\n' \
+    '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"on Domo allowlist"}}'
+  exit 0
+}
 
 # -----------------------------------------------------------------------------
-# DEFAULT-DENY fall-through: anything not explicitly allowed above is blocked.
-# This is where Bash, Write, Edit, WebFetch, Read, and the calendar WRITE tools
-# all land. Hard block, no prompt.
+# Membership test.
+# (1) Non-MCP tools never start with `mcp__` — Bash, Write, Edit, Read, WebFetch,
+#     Glob, Grep, Task, … all default-deny here outright.
+# (2) Channel reply tool(s): exact match (server segment is a stable plugin name).
+# (3) Calendar read tools: leaf match, ignoring the <server>/<UUID> segment.
+# Everything else (write leaves, unknown leaves, other connectors) falls through
+# to deny.
 # -----------------------------------------------------------------------------
-deny "$TOOL_NAME is not on the allowlist"
+case "$TOOL_NAME" in
+  mcp__*) : ;;                                   # an MCP tool — evaluate below
+  *) deny "$TOOL_NAME is not an MCP tool" ;;
+esac
+
+# (2) exact-match reply tool(s)
+for allowed in "${REPLY_TOOLS[@]}"; do
+  [ "$TOOL_NAME" = "$allowed" ] && allow
+done
+
+# (3) leaf-match read-only calendar tools. Strip "mcp__", then take everything
+# after the first "__" of the remainder => the tool leaf (server/UUID discarded).
+rest="${TOOL_NAME#mcp__}"     # <server>__<leaf>
+leaf="${rest#*__}"            # <leaf>
+for allowed in "${READ_LEAVES[@]}"; do
+  [ "$leaf" = "$allowed" ] && allow
+done
+
+# DEFAULT-DENY fall-through. Hard block, no prompt. The printed tool_name is the
+# discovery aid for confirming connector leaf names (see the ALLOW comment block).
+deny "$TOOL_NAME is not on the allowlist (leaf='$leaf')"

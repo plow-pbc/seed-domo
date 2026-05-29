@@ -61,8 +61,8 @@ everything after it is provider-agnostic. De-Plowing = re-pointing Gather.
 | Plow did this | Domo replacement | Plow-dependent? |
 |---|---|---|
 | Agent runtime (LLM in VM, API-keyed) | **Native Claude Code** (one persistent `claude --channels`), subscription auth | No |
-| Read calendar (`plow_calendar_search`) | **Google Calendar MCP** connector | No |
-| Gmail (triage) | **same Google Workspace connector** (free) | No |
+| Read calendar (`plow_calendar_search`) | **claude.ai Google Calendar connector** (account-scoped) | No |
+| Gmail (triage) | **same claude.ai Google Workspace connector** | No |
 | Read the user's *existing* iMessage threads (mood/triage) | **`imsg`** (openclaw/imsg, host-native Swift CLI) — optional for v1 | No |
 | Announce/send to owner | the channel's reply, or `imsg send` | No |
 | **Interactive chat with the agent** | **Claude Code `channels`** (built-in iMessage, or a custom Plow-Chat channel) | depends on channel |
@@ -149,8 +149,10 @@ the Mac (host-raw, subscription)
 
 Two independent decisions, each Plow-or-not:
 
-1. **Calendar/email:** Google Workspace MCP (Plow-free) ← recommended. *(Plow's open
-   calendar API also works but is an unnecessary tie now.)*
+1. **Calendar/email:** the **claude.ai Google Calendar connector** (Plow-free) ←
+   chosen. *(The first-party `calendarmcp.googleapis.com` MCP can't auth from Claude
+   Code — DCR failure; `@cocal/google-calendar-mcp` is the local-server backup. Plow's
+   open calendar API also works but is an unnecessary tie now.)*
 2. **Conversation:** built-in iMessage channel / `imsg` (Plow-free) **vs** plow-chat
    (Plow Chat API — managed WSS + verified-member access control, but depends on
    `api.plow.co` and the single Plow user credential).
@@ -201,17 +203,20 @@ boundary problem (see §7).
 
 - **`CLAUDE_CONFIG_DIR=<domo-home>/.claude`** relocates *everything*: settings,
   installed plugins, MCP servers, channel config, sessions, auth. Domo gets its own
-  plugins, own connector OAuth, own channel allowlist — fully separate from your
-  personal Claude Code. *(POC: the home defaults to the git checkout itself —
-  `seed-domo/.claude`, gitignored — so the instance lives inside the project; export
-  `DOMO_HOME=~/domo` to relocate.)*
+  plugins, own channel allowlist — fully separate from your personal Claude Code.
+  *(POC: the home defaults to the git checkout itself — `seed-domo/.claude`,
+  gitignored — so the instance lives inside the project; export `DOMO_HOME=~/domo`
+  to relocate.)*
 - **Own login** — a fresh config dir won't inherit your main login, so the instance
   authenticates itself: interactive `/login` for the POC (stored in the isolated
   dir), or a dedicated `CLAUDE_CODE_OAUTH_TOKEN` for the unattended tier. Same
   account either way; never an API key.
 - **Dedicated workspace** — `~/domo/workspace` so file tools are scoped.
-- **Own Google connector OAuth** — stored in the isolated config; Domo's calendar
-  access is separate from yours.
+- **Calendar connector is NOT isolated** — it's a **claude.ai account connector**,
+  so it (and every other connector on that account) auto-loads into Domo's session on
+  `/login`; there's no per-config-dir opt-out (#58453). Config/plugins/sessions/channel
+  stay isolated; connectors don't. The **default-deny hook** is what keeps Domo from
+  using any connector beyond the calendar read leaves — it's load-bearing for this.
 - **Run model:** channels need the session *open*, so run **one persistent `claude
   --channels`** in tmux/launchd for everything — interactive chat *and* the
   scheduled briefings (injected as events). There is no separate `-p` process.
@@ -258,8 +263,11 @@ real authorization policy (the "VIP" gate) lives later.
   allowlisted tools but verify no prompt appears in session logs; use **`exit 2`**
   for denials (guaranteed no prompt). Confirm against the installed version.
 
-**POC allowlist:** the Google Calendar MCP read tools + the channel's `reply` tool.
-Everything else (Bash, Write, Edit, WebFetch, …) → deny.
+**POC allowlist:** the Google Calendar **read leaves** (`list_calendars`,
+`list_events`, `get_event`, `suggest_time`) matched prefix-agnostically (the
+connector's server segment is an account UUID), plus the channel's `reply` tool
+(exact). Everything else — write leaves, every non-MCP tool (Bash, Write, Edit,
+WebFetch, …), and any *other* account connector — → deny.
 
 ---
 
@@ -268,23 +276,33 @@ Everything else (Bash, Write, Edit, WebFetch, …) → deny.
 > Confidence varies — channels and the Google Calendar MCP endpoint are recent /
 > preview; re-confirm at build time against the installed Claude Code version.
 
-### Google Calendar MCP (read access, subscription, headless)
-- **First-party Google endpoint** (HTTP MCP):
-  ```bash
-  claude mcp add --transport http google-calendar https://calendarmcp.googleapis.com/mcp/v1
-  ```
-- **Tools:** `list_calendars`, `list_events`, `get_event`, `suggest_time`,
-  `respond_to_event`, `create_event`, `update_event`, `delete_event`.
-- **Read-only scopes:** `calendar.calendarlist.readonly`, `calendar.events.readonly`,
-  `calendar.events.freebusy`.
-- **OAuth:** no headless registration — run `/mcp` interactively **once** to complete
-  the browser flow; the stored token is reused by later headless runs.
-- **Subscription:** works with `CLAUDE_CODE_OAUTH_TOKEN` (Pro/Max/Team/Enterprise).
-- **Community fallback:** `nspady/google-calendar-mcp` (verify before relying on it).
-- Cite: `developers.google.com/workspace/calendar/api/guides/configure-mcp-server`,
-  `code.claude.com/docs/en/mcp-servers.md`.
-- ⚠️ The earlier "`https://mcp.google.com/mcp`" was wrong/unverified — use the
-  `calendarmcp.googleapis.com` endpoint above and confirm it at build time.
+### Google Calendar — via the claude.ai account CONNECTOR (chosen path)
+**Decision:** use the **claude.ai Google Calendar connector**, not a locally-added MCP
+server. Connect it once at `claude.ai/customize/connectors`; it is **account-scoped**
+and auto-loads into any Claude Code session (incl. an isolated `CLAUDE_CONFIG_DIR`)
+that `/login`s with the same account. No `claude mcp add`, no GCP OAuth client, no DCR.
+- **Why not the first-party `calendarmcp.googleapis.com` HTTP MCP:** it **fails from
+  Claude Code** — `claude mcp add … https://calendarmcp.googleapis.com/mcp/v1` → `/mcp`
+  errors with *"Incompatible auth server: does not support dynamic client
+  registration."* Claude Code's MCP client requires DCR and ignores pre-set
+  `--client-id`/`--client-secret` (issues #26675, #52638, #53253). Dead end for now.
+- **Tools (leaves):** `list_calendars`, `list_events`, `get_event`, `suggest_time`
+  (read); `create_event`, `update_event`, `delete_event`, `respond_to_event` (write).
+- **Tool naming:** connector tools surface to hooks as **`mcp__<account-UUID>__<leaf>`**
+  — the UUID is account-specific, unpredictable, and changes on reconnect
+  (issues #22599, #22276). So the allowlist hook **matches the read leaf and ignores
+  the UUID**; the exact leaves are confirmed empirically via the deny log.
+- **Scope:** the connector grants read **and** write; there is **no read-only mode**.
+  Read-only is enforced *solely* by the default-deny hook (allow read leaves, deny the
+  rest). This makes the hook load-bearing (see §7, §8).
+- **Plan requirement:** connectors need Pro/Max/Team/Enterprise; work on subscription
+  `/login` in persistent `--channels` sessions.
+- **Community fallback (not chosen):** `@cocal/google-calendar-mcp` (`nspady`) — a
+  local stdio server using your *own* GCP OAuth client (no DCR), kebab-case tool names
+  (`list-events`, …), 7-day refresh-token expiry while the OAuth app is in "testing."
+  Keep as a backup if the connector path regresses.
+- Cite: `support.claude.com/.../use-google-workspace-connectors`,
+  `code.claude.com/docs/en/mcp.md` ("Use MCP servers from Claude.ai").
 
 ### Channels facts
 - Enable per session: `claude --channels plugin:<name>@<marketplace>` (space-separated
@@ -341,8 +359,13 @@ channel install/pairing. After that the listener + hook run unattended.
 - **Agent SDK on subscription** — unresolved; the persistent `--channels` session avoids it.
 - **PreToolUse "allow" prompt bug (#52822)** — verify behavior on installed version;
   fall back to `exit 2` for denials.
-- **Google Calendar MCP endpoint** — recent; re-confirm `calendarmcp.googleapis.com`
-  and that read-only scopes are honored.
+- **Calendar = claude.ai connector** — confirm the read-tool **leaf** names via the
+  deny log (tool surface is `mcp__<account-UUID>__<leaf>`, UUID unpredictable). Note:
+  connector is **account-scoped** (inherits *all* account connectors; no per-config-dir
+  opt-out, #58453) and grants **read+write** (no read-only scope) — the default-deny
+  hook is the only thing enforcing read-only. First-party `calendarmcp.googleapis.com`
+  is unusable from Claude Code (DCR failure); community `@cocal/google-calendar-mcp` is
+  the backup.
 - **Channels = research preview** — flag/protocol may change.
 - **Briefing trigger** — whether `/loop` composes with channel event-handling in one
   session is unverified; external `launchd`-into-channel trigger is the fallback.
