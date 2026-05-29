@@ -57,10 +57,12 @@ TOKEN_FILE="$CONFIG_DIR/oauth-token"
 # is no `claude mcp add` here. Its tools surface as mcp__<account-UUID>__<tool>; the
 # hook matches the read-tool LEAF and ignores the UUID (see hooks/allowlist-guard.sh).
 
-# Channels flag for the persistent session (PLAN.md §4.2, §9).
-# TODO-VERIFY: that the plugin install name is literally `fakechat` and the
-# marketplace id is `claude-plugins-official` (confirm via `/plugin` at setup).
-# Space-separated if more channels are ever added.
+# Channel plugin + marketplace (PLAN.md §4.2, §9). `setup` installs these headlessly
+# via `claude plugin marketplace add` + `claude plugin install … --scope user`.
+# TODO-VERIFY: that the install name is literally `fakechat` (confirm via `/plugin`).
+MARKETPLACE_SRC="anthropics/claude-plugins-official"   # GitHub repo for the marketplace
+PLUGIN_SPEC="fakechat@claude-plugins-official"         # <plugin>@<marketplace-name>
+# Channels flag for the persistent session. Space-separated if more are added.
 CHANNELS_FLAG="plugin:fakechat@claude-plugins-official"
 
 # fakechat serves its localhost UI on FAKECHAT_PORT (default 8787). Confirmed in
@@ -162,34 +164,41 @@ cmd_setup() {
   # NOTE: no `claude mcp add` for calendar — it comes from the claude.ai account
   # connector (see the GOOGLE_CALENDAR note up top), which auto-loads after /login.
 
-  # Remaining steps are interactive (browser + in-session slash commands) and
-  # cannot be scripted headlessly; print exact instructions.
+  # Install the fakechat channel plugin headlessly (no /plugin TUI). --scope user
+  # installs into THIS isolated config dir (Domo-instance-wide). Best-effort +
+  # idempotent: tolerate "already added / already installed" so re-running is safe.
+  # stdin from /dev/null: if a version of the CLI ever prompts (e.g. a trust
+  # confirmation), it gets EOF and fails fast instead of hanging setup.
+  log "Adding marketplace '$MARKETPLACE_SRC' (user scope)..."
+  claude plugin marketplace add "$MARKETPLACE_SRC" </dev/null >/dev/null 2>&1 \
+    || warn "marketplace add returned non-zero (may already exist). Continuing."
+  log "Installing plugin '$PLUGIN_SPEC' (user scope)..."
+  if claude plugin install "$PLUGIN_SPEC" --scope user </dev/null; then
+    log "fakechat installed."
+  else
+    warn "plugin install returned non-zero (may already be installed, or needs /login first)."
+    warn "If needed, finish it in './run.sh shell':  /plugin install $PLUGIN_SPEC"
+  fi
+
+  # Remaining steps need a browser and/or interactive login; print instructions.
   cat >&2 <<EOF
 
 [domo] ============================================================
-[domo] REMAINING ONE-TIME INTERACTIVE STEPS (cannot be scripted)
+[domo] REMAINING ONE-TIME INTERACTIVE STEPS
 [domo] ============================================================
 [domo]
-[domo] 0) Connect Google Calendar ONCE at the ACCOUNT level (in a browser):
+[domo] A) Connect Google Calendar ONCE at the ACCOUNT level (in a browser):
 [domo]      https://claude.ai/customize/connectors  -> Google Calendar -> Connect
 [domo]    Use the SAME Anthropic account you'll /login below. Account-scoped, so it
 [domo]    then auto-loads into this isolated instance (no 'claude mcp add').
 [domo]
-[domo]    The rest run INSIDE an isolated 'claude' session. Open one with:
-[domo]      ./run.sh shell        # interactive 'claude' under CLAUDE_CONFIG_DIR=$CONFIG_DIR
-[domo]    (Everything there lands in the Domo instance, separate from your personal CC.)
+[domo] B) Log this instance in:
+[domo]      ./run.sh shell    # interactive 'claude' under CLAUDE_CONFIG_DIR=$CONFIG_DIR
+[domo]      /login            # SAME account that holds the Calendar connector; then exit
+[domo]    (A fresh config dir has no login; no token needed. fakechat is already
+[domo]    installed above — if that step warned, run /plugin install $PLUGIN_SPEC here.)
 [domo]
-[domo] 1) Log this instance in (no token needed — a fresh config dir has no login):
-[domo]      /login            # use the SAME account that holds the Calendar connector
-[domo]
-[domo] 2) Install the fakechat channel plugin:
-[domo]      /plugin marketplace add anthropics/claude-plugins-official
-[domo]      /plugin install fakechat@claude-plugins-official
-[domo]    TODO-VERIFY: that the install name is literally 'fakechat' (check /plugin).
-[domo]    If it differs, update CHANNELS_FLAG in run.sh AND REPLY_TOOLS in
-[domo]    hooks/allowlist-guard.sh.
-[domo]
-[domo] 3) (recommended) Confirm the connector's calendar tool LEAVES:
+[domo] C) (recommended) Confirm the connector's calendar tool LEAVES:
 [domo]    ask the session "what's on my calendar today?". If the hook denies it, its
 [domo]    stderr prints the literal tool_name (e.g. mcp__<uuid>__list_events) — read
 [domo]    the leaf and make sure it's in READ_LEAVES in hooks/allowlist-guard.sh.
@@ -199,7 +208,7 @@ cmd_setup() {
 [domo] ============================================================
 EOF
 
-  log "Setup complete (interactive steps above still required)."
+  log "Setup complete (interactive login + calendar connect still required)."
 }
 
 # ---------------------------------------------------------------------------
@@ -232,10 +241,10 @@ cmd_start() {
 }
 
 # ---------------------------------------------------------------------------
-# shell — open an interactive 'claude' under the isolated config dir. This is the
-# session where you do the one-time /login and /plugin install fakechat. (Calendar
-# is the claude.ai account connector — connected in a browser, not here.)
-# Channels are intentionally OFF here so it works before fakechat is installed.
+# shell — open an interactive 'claude' under the isolated config dir. Primary use:
+# the one-time /login. (fakechat is installed headlessly by `setup`; calendar is the
+# claude.ai account connector, connected in a browser — neither happens here.)
+# Channels are intentionally OFF here.
 # ---------------------------------------------------------------------------
 cmd_shell() {
   export_config_dir
@@ -244,7 +253,7 @@ cmd_shell() {
   [[ -d "$WORKSPACE" ]] || mkdir -p "$WORKSPACE"
   cd "$WORKSPACE"
   log "Opening interactive Domo session (CLAUDE_CONFIG_DIR=$CONFIG_DIR)."
-  log "One-time steps in here: /login (same account as the Calendar connector), then /plugin install fakechat."
+  log "One-time step in here: /login (same account as the Calendar connector). Then exit."
   exec claude
 }
 
@@ -347,8 +356,8 @@ Commands:
            workspace ($WORKSPACE), copy config/settings.json into place, and print
            the remaining interactive steps. Idempotent. (Calendar = claude.ai
            account connector; no 'claude mcp add'.)
-  shell    Open an interactive 'claude' under the isolated config dir — where you
-           do the one-time /login and /plugin install fakechat.
+  shell    Open an interactive 'claude' under the isolated config dir — for the
+           one-time /login (fakechat is installed by 'setup').
   start    Launch the single persistent 'claude --channels $CHANNELS_FLAG' session.
   doctor   Read-only preflight; exits non-zero on any failed assertion.
 

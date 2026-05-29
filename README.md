@@ -100,6 +100,10 @@ This (idempotent):
 - `mkdir -p $DOMO_HOME/.claude $DOMO_HOME/workspace`,
 - `chmod +x` the hook,
 - **copies** `config/settings.json` → `$DOMO_HOME/.claude/settings.json`,
+- **installs the fakechat plugin headlessly** —
+  `claude plugin marketplace add anthropics/claude-plugins-official` then
+  `claude plugin install fakechat@claude-plugins-official --scope user`
+  (user scope = this isolated config dir; no `/plugin` TUI),
 - then prints the remaining interactive steps below.
 
 (No `claude mcp add` — calendar comes from the claude.ai account connector in step 2.)
@@ -121,9 +125,9 @@ it fails on dynamic client registration. See PLAN.md §9.)
 ```
 
 `shell` opens an interactive `claude` under `CLAUDE_CONFIG_DIR=$DOMO_HOME/.claude`
-(channels off, so it works before fakechat is installed). A fresh config dir does
-**not** inherit your personal login, so authenticate this instance once — with the
-**same account that holds the Calendar connector**:
+(channels off). A fresh config dir does **not** inherit your personal login, so
+authenticate this instance once — with the **same account that holds the Calendar
+connector**:
 
 ```
 /login
@@ -131,19 +135,13 @@ it fails on dynamic client registration. See PLAN.md §9.)
 
 Credentials are stored **in the isolated dir** and reused by the persistent session
 — so no `CLAUDE_CODE_OAUTH_TOKEN` is needed for the POC. The Calendar connector
-auto-loads on this login. (A `setup-token` is only worth it later for a fully
-unattended/cron tier; see [Auth](#auth-token-optional).)
+auto-loads on this login. Then exit the shell — you're ready to `start`. (A
+`setup-token` is only worth it later for a fully unattended/cron tier; see
+[Auth](#auth-token-optional).)
 
-### 4. Install the fakechat channel plugin (once)
-
-Still inside `./run.sh shell`:
-
-```
-/plugin marketplace add anthropics/claude-plugins-official
-/plugin install fakechat@claude-plugins-official
-```
-
-Both land in `$DOMO_HOME/.claude`. Then exit the shell — you're ready to `start`.
+> **fakechat is already installed by `setup`** (headless `claude plugin install`).
+> If that step warned (e.g. it needed login first), finish it here:
+> `/plugin install fakechat@claude-plugins-official` → choose **user scope**.
 
 > **Connector tool names.** Connector tools surface to the hook as
 > `mcp__<account-UUID>__<tool>`, where the UUID is account-specific and
