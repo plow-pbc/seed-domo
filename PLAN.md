@@ -194,10 +194,12 @@ boundary problem (see §7).
 
 ## 7. Isolation (the "own environment" part)
 
-- **`CLAUDE_CONFIG_DIR=~/domo/.claude`** relocates *everything*: settings, installed
-  plugins, MCP servers, channel config, sessions, auth. Domo gets its own plugins,
-  own connector OAuth, own channel allowlist — fully separate from your personal
-  Claude Code.
+- **`CLAUDE_CONFIG_DIR=<domo-home>/.claude`** relocates *everything*: settings,
+  installed plugins, MCP servers, channel config, sessions, auth. Domo gets its own
+  plugins, own connector OAuth, own channel allowlist — fully separate from your
+  personal Claude Code. *(POC: the home defaults to the git checkout itself —
+  `seed-domo/.claude`, gitignored — so the instance lives inside the project; export
+  `DOMO_HOME=~/domo` to relocate.)*
 - **Own subscription token** — a fresh config dir won't inherit your main login; set
   `CLAUDE_CODE_OAUTH_TOKEN` for the instance (same account, dedicated token).
 - **Dedicated workspace** — `~/domo/workspace` so file tools are scoped.

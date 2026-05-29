@@ -29,7 +29,7 @@ claude --channels plugin:fakechat@claude-plugins-official
 
 There is no `claude -p` path. The same always-on session would later handle both
 interactive chat and scheduled briefings. Everything is isolated under
-`CLAUDE_CONFIG_DIR=~/domo/.claude` with a dedicated OAuth token and workspace
+`CLAUDE_CONFIG_DIR=$DOMO_HOME/.claude` with a dedicated OAuth token and workspace
 (PLAN.md §7). The security spine is a `PreToolUse` hook that **default-denies**
 and allows only Google Calendar **read** tools + the fakechat `reply` tool
 (PLAN.md §8).
@@ -57,14 +57,17 @@ and allows only Google Calendar **read** tools + the fakechat `reply` tool
 
 ## The three isolated paths
 
-Everything Domo touches lives under `~/domo` (PLAN.md §7). `run.sh` derives these
-from `DOMO_HOME` (default `~/domo`):
+Everything Domo touches lives under `$DOMO_HOME`, which **for the POC defaults to
+this git checkout** (`/Users/plucas/cncorp/seed-domo`) — so the instance is fully
+isolated from your personal Claude Code and its state stays inside the project.
+`run.sh` derives the paths below; export `DOMO_HOME` to relocate (e.g. `~/domo`).
+`.claude/` and `workspace/` are gitignored:
 
 | Path | What it is |
 |---|---|
-| `~/domo/.claude` | `CLAUDE_CONFIG_DIR` — **all** Domo state: settings, plugins, MCP servers, channel config, sessions, auth. |
-| `~/domo/.claude/settings.json` | the **active** config — a copy of `config/settings.json` that registers the hook. |
-| `~/domo/workspace` | dedicated, scoped workspace; `start` runs from here. |
+| `$DOMO_HOME/.claude` | `CLAUDE_CONFIG_DIR` — **all** Domo state: settings, plugins, MCP servers, channel config, sessions, auth. |
+| `$DOMO_HOME/.claude/settings.json` | the **active** config — a copy of `config/settings.json` that registers the hook. |
+| `$DOMO_HOME/workspace` | dedicated, scoped workspace; `start` runs from here. |
 
 The hook script itself is **not** copied. `config/settings.json` registers the
 hook by its **absolute repo path**
@@ -88,7 +91,7 @@ export CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)
 A fresh `CLAUDE_CONFIG_DIR` does **not** inherit your personal login, so Domo
 needs its own dedicated token on the same account (PLAN.md §7). Persist it so
 `run.sh` can read it — `run.sh` looks in the environment, then a gitignored
-`~/domo/.env` or `~/domo/.claude/oauth-token`. If it is unset, `run.sh` prints the
+`$DOMO_HOME/.env` or `$DOMO_HOME/.claude/oauth-token`. If it is unset, `run.sh` prints the
 `claude setup-token` instruction and exits non-zero rather than proceed. **Do not
 hardcode the token in the repo.**
 
@@ -99,10 +102,10 @@ hardcode the token in the repo.**
 ```
 
 This (idempotent):
-- exports `CLAUDE_CONFIG_DIR=~/domo/.claude`,
-- `mkdir -p ~/domo/.claude ~/domo/workspace`,
+- exports `CLAUDE_CONFIG_DIR=$DOMO_HOME/.claude`,
+- `mkdir -p $DOMO_HOME/.claude $DOMO_HOME/workspace`,
 - `chmod +x` the hook,
-- **copies** `config/settings.json` → `~/domo/.claude/settings.json`,
+- **copies** `config/settings.json` → `$DOMO_HOME/.claude/settings.json`,
 - runs
   `claude mcp add --transport http google-calendar https://calendarmcp.googleapis.com/mcp/v1`,
 - verifies `CLAUDE_CODE_OAUTH_TOKEN` is set (else prints `claude setup-token`
@@ -133,7 +136,7 @@ In an interactive Domo session (running under the same `CLAUDE_CONFIG_DIR`):
 /plugin install fakechat@claude-plugins-official
 ```
 
-Both land in `~/domo/.claude`.
+Both land in `$DOMO_HOME/.claude`.
 
 ---
 
@@ -144,13 +147,13 @@ Both land in `~/domo/.claude`.
 ```
 
 This exports the same `CLAUDE_CONFIG_DIR` + `CLAUDE_CODE_OAUTH_TOKEN`, `cd`s to
-`~/domo/workspace`, and execs the **one** persistent session:
+`$DOMO_HOME/workspace`, and execs the **one** persistent session:
 
 ```
 claude --channels plugin:fakechat@claude-plugins-official
 ```
 
-`start` refuses to launch (clear error) if `~/domo/.claude/settings.json` is
+`start` refuses to launch (clear error) if `$DOMO_HOME/.claude/settings.json` is
 missing (setup not run) or if the token is unset.
 
 ### Preflight (recommended)
@@ -269,6 +272,6 @@ the interactive setup:
 - `run.sh` — `setup` / `start` / `doctor` subcommands.
 - `hooks/allowlist-guard.sh` — the default-deny `PreToolUse` hook (the security spine).
 - `config/settings.json` — repo source of truth; copied to
-  `~/domo/.claude/settings.json` by `run.sh setup`, registering the hook by its
+  `$DOMO_HOME/.claude/settings.json` by `run.sh setup`, registering the hook by its
   absolute repo path.
 - `PLAN.md` — the authoritative design.

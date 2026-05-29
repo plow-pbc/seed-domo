@@ -21,20 +21,23 @@ set -euo pipefail
 # Source-of-truth paths (single source -> the three absolute paths stay in sync)
 # ---------------------------------------------------------------------------
 
-# DOMO_HOME is an internal convenience var only (default ~/domo). CONFIG_DIR and
-# WORKSPACE are derived from it so the isolated paths never drift.
-DOMO_HOME="${DOMO_HOME:-$HOME/domo}"
-CONFIG_DIR="$DOMO_HOME/.claude"
-WORKSPACE="$DOMO_HOME/workspace"
-
-# The hook script and the repo's settings source live in this git checkout.
-# REPO_ROOT is resolved from this script's own location so the build is portable,
-# but the hook command path baked into settings.json is the literal absolute path
+# REPO_ROOT is resolved from this script's own location so the build is portable.
+# The hook command path baked into settings.json is the literal absolute path
 # (see config/settings.json + the settings_wiring contract).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
 REPO_SETTINGS="$REPO_ROOT/config/settings.json"
 HOOK_SCRIPT="$REPO_ROOT/hooks/allowlist-guard.sh"
+
+# DOMO_HOME is the isolated Claude home for this instance. For the POC it defaults
+# to THIS git checkout, so Domo's config / auth / sessions / plugins are fully
+# separate from your personal Claude Code and live entirely inside the project
+# (under .claude/, which is gitignored). CONFIG_DIR and WORKSPACE derive from it so
+# the isolated paths never drift. Override by exporting DOMO_HOME (e.g. ~/domo)
+# without editing this file.
+DOMO_HOME="${DOMO_HOME:-$REPO_ROOT}"
+CONFIG_DIR="$DOMO_HOME/.claude"
+WORKSPACE="$DOMO_HOME/workspace"
 
 # The ACTIVE config that the persistent session reads. `setup` COPIES the repo
 # settings here (copy, not symlink: a symlink into a git checkout is brittle and

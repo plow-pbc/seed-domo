@@ -1,0 +1,12 @@
+# Domo's isolated Claude home (DOMO_HOME defaults to this checkout for the POC).
+# Holds ALL instance state: active settings.json, OAuth/connector auth, installed
+# plugins, MCP config, channel config, session history. NEVER track any of it.
+/.claude/
+
+# Dedicated, scoped agent workspace (`start` runs from here).
+/workspace/
+
+# Local subscription token / env, if the operator persists them in the checkout.
+/.env
+
+.DS_Store
