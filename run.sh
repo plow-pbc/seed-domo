@@ -90,10 +90,16 @@ export_config_dir() {
   log "CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"
 }
 
-# Load the subscription OAuth token (PLAN.md §6). Order: existing env var, then
-# ~/domo/.env, then ~/domo/.claude/oauth-token. Never hardcoded in the repo.
-# If unset after all that, print the `claude setup-token` guidance and exit non-zero.
-load_token() {
+# Resolve subscription auth (PLAN.md §6/§7). The token is OPTIONAL. Auth resolves
+# in this order:
+#   1. CLAUDE_CODE_OAUTH_TOKEN (env, then $ENV_FILE, then $TOKEN_FILE) — the
+#      headless/cron path ('claude setup-token'). Never hardcoded in the repo.
+#   2. Otherwise: the interactive login stored in the isolated config dir (run
+#      '/login' once inside ./run.sh shell). This is the POC default.
+#   3. If neither exists yet, the interactive session simply prompts to /login.
+# This function is NON-FATAL — it never blocks start/shell, because the isolated
+# session boots interactively and can authenticate itself.
+ensure_auth() {
   if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" && -f "$ENV_FILE" ]]; then
     # shellcheck disable=SC1090
     set +u; source "$ENV_FILE"; set -u
@@ -101,30 +107,14 @@ load_token() {
   if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" && -f "$TOKEN_FILE" ]]; then
     CLAUDE_CODE_OAUTH_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
   fi
-  if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
-    cat >&2 <<EOF
-[domo] ERROR: CLAUDE_CODE_OAUTH_TOKEN is not set.
-
-Domo's isolated config dir does NOT inherit your personal Claude login, so it
-needs its own subscription token (same Claude account, dedicated token).
-
-Generate one once:
-
-    claude setup-token
-
-Then make it available to run.sh in any of these ways:
-
-    export CLAUDE_CODE_OAUTH_TOKEN=...                # this shell, or
-    echo 'export CLAUDE_CODE_OAUTH_TOKEN=...' >> $ENV_FILE   # persisted (gitignored), or
-    printf '%s\n' '<token>' > $TOKEN_FILE             # persisted (gitignored)
-
-This is a subscription token, NOT an API key. Keep ANTHROPIC_API_KEY unset so
-subscription auth is used.
-EOF
-    exit 1
+  if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+    export CLAUDE_CODE_OAUTH_TOKEN
+    log "Auth: using CLAUDE_CODE_OAUTH_TOKEN (headless subscription token)."
+  else
+    log "Auth: no token set — using the interactive login in $CONFIG_DIR."
+    log "      If you haven't logged this instance in yet, run './run.sh shell' and '/login' once."
   fi
-  export CLAUDE_CODE_OAUTH_TOKEN
-  # Guard against accidentally falling back to metered API billing.
+  # Guard against accidentally falling back to metered API billing, always.
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
     warn "ANTHROPIC_API_KEY is set; unsetting it so subscription auth is used."
     unset ANTHROPIC_API_KEY
@@ -142,9 +132,9 @@ cmd_setup() {
   export_config_dir
   require_claude
 
-  # Verify the token early so we fail fast with guidance (the interactive flows
-  # below also need an authenticated isolated instance).
-  load_token
+  # Resolve auth (non-fatal). The interactive flows below authenticate the isolated
+  # instance via /login if no token is set.
+  ensure_auth
 
   log "Creating isolated config dir and workspace..."
   mkdir -p "$CONFIG_DIR" "$WORKSPACE"
@@ -177,28 +167,28 @@ cmd_setup() {
 [domo] ============================================================
 [domo] REMAINING ONE-TIME INTERACTIVE STEPS (cannot be scripted)
 [domo] ============================================================
-[domo] These run INSIDE an isolated 'claude' session. CLAUDE_CONFIG_DIR is
-[domo] already set to $CONFIG_DIR for this shell, so anything you do lands in
-[domo] the Domo instance. If you open a new shell, re-export it first:
+[domo] These run INSIDE an isolated 'claude' session. Open one with:
 [domo]
-[domo]     export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
-[domo]     export CLAUDE_CODE_OAUTH_TOKEN=...   # see 'claude setup-token'
+[domo]      ./run.sh shell        # interactive 'claude' under CLAUDE_CONFIG_DIR=$CONFIG_DIR
 [domo]
-[domo] 1) Google Calendar OAuth (browser flow — no headless registration):
-[domo]      claude            # or: claude --channels off
+[domo] (Everything you do there lands in the Domo instance, separate from your
+[domo] personal Claude Code.)
+[domo]
+[domo] 1) Log this instance in (no token needed — a fresh config dir has no login):
+[domo]      /login            # browser OAuth; credentials stored in the isolated dir
+[domo]
+[domo] 2) Google Calendar OAuth (browser flow — no headless registration):
 [domo]      /mcp              # complete the google-calendar browser OAuth ONCE
-[domo]    The stored token is then reused by the persistent headless session.
 [domo]    Read-only scopes only (calendarlist.readonly / events.readonly / freebusy).
 [domo]
-[domo] 2) Install the fakechat channel plugin:
-[domo]      claude --channels off
+[domo] 3) Install the fakechat channel plugin:
 [domo]      /plugin marketplace add anthropics/claude-plugins-official
 [domo]      /plugin install fakechat@claude-plugins-official
 [domo]    TODO-VERIFY: that the install name is literally 'fakechat' (check /plugin).
 [domo]    If it differs, update CHANNELS_FLAG in run.sh AND the reply tool_name in
 [domo]    hooks/allowlist-guard.sh.
 [domo]
-[domo] 3) (recommended) Capture the literal tool_names PreToolUse sees:
+[domo] 4) (recommended) Capture the literal tool_names PreToolUse sees:
 [domo]    trigger a calendar read and a fakechat reply once, then inspect the hook
 [domo]    log to confirm 'mcp__google-calendar__*' and 'mcp__fakechat__reply'.
 [domo]    Adjust the ALLOW array in hooks/allowlist-guard.sh if they differ.
@@ -217,7 +207,7 @@ EOF
 cmd_start() {
   export_config_dir
   require_claude
-  load_token
+  ensure_auth
 
   # Refuse to start if setup hasn't run (active settings = the hook wiring).
   [[ -f "$INSTALLED_SETTINGS" ]] || die "active settings not found at $INSTALLED_SETTINGS. Run './run.sh setup' first."
@@ -229,8 +219,27 @@ cmd_start() {
   log "Starting persistent session in $WORKSPACE"
   log "Channels: $CHANNELS_FLAG"
   # The ONE persistent session. No 'claude -p'. exec so signals pass through and
-  # this script does not linger as a parent.
+  # this script does not linger as a parent. Runs in the foreground TTY so the
+  # one-time channels-preview consent (and a /login prompt, if not yet logged in)
+  # can be accepted interactively. NEVER add --dangerously-skip-permissions here:
+  # that bypasses the PreToolUse allowlist hook (the security spine, PLAN.md §8).
   exec claude --channels "$CHANNELS_FLAG"
+}
+
+# ---------------------------------------------------------------------------
+# shell — open an interactive 'claude' under the isolated config dir. This is the
+# session where you do the one-time /login, /mcp OAuth, and /plugin install.
+# Channels are intentionally OFF here so it works before fakechat is installed.
+# ---------------------------------------------------------------------------
+cmd_shell() {
+  export_config_dir
+  require_claude
+  ensure_auth
+  [[ -d "$WORKSPACE" ]] || mkdir -p "$WORKSPACE"
+  cd "$WORKSPACE"
+  log "Opening interactive Domo session (CLAUDE_CONFIG_DIR=$CONFIG_DIR)."
+  log "One-time steps in here: /login, then /mcp (Google OAuth), then /plugin install fakechat."
+  exec claude
 }
 
 # ---------------------------------------------------------------------------
@@ -272,10 +281,15 @@ cmd_doctor() {
     warn "MISS jq not on PATH — the hook fails closed (denies all) without it. Install jq."; ok=1
   fi
 
+  # Auth is OPTIONAL via token: a token OR a stored interactive login both work.
+  # The credentials file is the macOS-file form; on some setups creds live in the
+  # Keychain, so absence here is not a failure — just informational.
   if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] || [[ -f "$ENV_FILE" ]] || [[ -f "$TOKEN_FILE" ]]; then
-    log "OK   CLAUDE_CODE_OAUTH_TOKEN available (env or token file)"
+    log "OK   auth: CLAUDE_CODE_OAUTH_TOKEN available (env or token file)"
+  elif [[ -f "$CONFIG_DIR/.credentials.json" ]]; then
+    log "OK   auth: interactive login present in $CONFIG_DIR"
   else
-    warn "MISS CLAUDE_CODE_OAUTH_TOKEN not set and no token file. Run 'claude setup-token'."; ok=1
+    log "INFO auth: no token and no detected stored login — run './run.sh shell' then '/login' once (creds may also be in the Keychain)."
   fi
 
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
@@ -323,17 +337,20 @@ Domo orchestrator
 Usage: $(basename "$0") <command>
 
 Commands:
-  setup    One-time interactive bootstrap: create the isolated config dir
-           ($CONFIG_DIR) + workspace ($WORKSPACE), copy config/settings.json into
-           place, add the Google Calendar MCP, and print the remaining interactive
-           steps (/mcp OAuth, plugin install). Idempotent.
+  setup    One-time bootstrap: create the isolated config dir ($CONFIG_DIR) +
+           workspace ($WORKSPACE), copy config/settings.json into place, add the
+           Google Calendar MCP, and print the remaining interactive steps. Idempotent.
+  shell    Open an interactive 'claude' under the isolated config dir — where you
+           do the one-time /login, /mcp OAuth, and /plugin install fakechat.
   start    Launch the single persistent 'claude --channels $CHANNELS_FLAG' session.
   doctor   Read-only preflight; exits non-zero on any failed assertion.
 
 Environment:
-  CLAUDE_CODE_OAUTH_TOKEN  (required) subscription token from 'claude setup-token'.
-                           May instead live in $ENV_FILE or $TOKEN_FILE.
-  DOMO_HOME                (optional) base dir; default $HOME/domo.
+  CLAUDE_CODE_OAUTH_TOKEN  (optional) subscription token from 'claude setup-token'
+                           for headless/cron use. May live in $ENV_FILE or
+                           $TOKEN_FILE. If unset, auth uses the interactive /login
+                           stored in the isolated config dir (the POC default).
+  DOMO_HOME                (optional) base dir; default: this git checkout.
 EOF
 }
 
@@ -341,6 +358,7 @@ main() {
   local cmd="${1:-}"
   case "$cmd" in
     setup)  shift; cmd_setup "$@" ;;
+    shell)  shift; cmd_shell "$@" ;;
     start)  shift; cmd_start "$@" ;;
     doctor) shift; cmd_doctor "$@" ;;
     ""|-h|--help|help) usage; [[ -z "$cmd" ]] && exit 1 || exit 0 ;;

@@ -163,8 +163,13 @@ boundary problem (see §7).
 
 ## 6. Auth & billing
 
-- **Subscription auth:** `export CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)` —
-  explicitly documented for scripts/cron. No API key.
+- **Subscription auth:** two paths, no API key.
+  - **POC default — interactive `/login`** in the isolated session. Since the
+    runtime boots interactively anyway (to accept the channels-preview consent and
+    do the one-time `/mcp` + plugin install), just `/login` once; credentials persist
+    in the isolated config dir and the persistent session reuses them. No token.
+  - **Unattended/cron later — `CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)`**, the
+    headless path documented for scripts/cron.
 - **Per-chat memory** comes from the single persistent session staying open
   (auto-compaction handles context growth) — no `claude -p`/`--resume` plumbing.
 - **Billing pools:**
@@ -200,8 +205,10 @@ boundary problem (see §7).
   personal Claude Code. *(POC: the home defaults to the git checkout itself —
   `seed-domo/.claude`, gitignored — so the instance lives inside the project; export
   `DOMO_HOME=~/domo` to relocate.)*
-- **Own subscription token** — a fresh config dir won't inherit your main login; set
-  `CLAUDE_CODE_OAUTH_TOKEN` for the instance (same account, dedicated token).
+- **Own login** — a fresh config dir won't inherit your main login, so the instance
+  authenticates itself: interactive `/login` for the POC (stored in the isolated
+  dir), or a dedicated `CLAUDE_CODE_OAUTH_TOKEN` for the unattended tier. Same
+  account either way; never an API key.
 - **Dedicated workspace** — `~/domo/workspace` so file tools are scoped.
 - **Own Google connector OAuth** — stored in the isolated config; Domo's calendar
   access is separate from yours.

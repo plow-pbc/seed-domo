@@ -29,7 +29,7 @@ claude --channels plugin:fakechat@claude-plugins-official
 
 There is no `claude -p` path. The same always-on session would later handle both
 interactive chat and scheduled briefings. Everything is isolated under
-`CLAUDE_CONFIG_DIR=$DOMO_HOME/.claude` with a dedicated OAuth token and workspace
+`CLAUDE_CONFIG_DIR=$DOMO_HOME/.claude` with its own login and workspace
 (PLAN.md §7). The security spine is a `PreToolUse` hook that **default-denies**
 and allows only Google Calendar **read** tools + the fakechat `reply` tool
 (PLAN.md §8).
@@ -82,20 +82,7 @@ hook by its **absolute repo path**
 These steps require a browser and/or interactive `claude` slash commands. Do them
 once; afterward the listener + hook run unattended (PLAN.md §10).
 
-### 1. Get a subscription token
-
-```bash
-export CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)
-```
-
-A fresh `CLAUDE_CONFIG_DIR` does **not** inherit your personal login, so Domo
-needs its own dedicated token on the same account (PLAN.md §7). Persist it so
-`run.sh` can read it — `run.sh` looks in the environment, then a gitignored
-`$DOMO_HOME/.env` or `$DOMO_HOME/.claude/oauth-token`. If it is unset, `run.sh` prints the
-`claude setup-token` instruction and exits non-zero rather than proceed. **Do not
-hardcode the token in the repo.**
-
-### 2. Run setup
+### 1. Run setup
 
 ```bash
 ./run.sh setup
@@ -108,20 +95,37 @@ This (idempotent):
 - **copies** `config/settings.json` → `$DOMO_HOME/.claude/settings.json`,
 - runs
   `claude mcp add --transport http google-calendar https://calendarmcp.googleapis.com/mcp/v1`,
-- verifies `CLAUDE_CODE_OAUTH_TOKEN` is set (else prints `claude setup-token`
-  guidance and exits non-zero),
 - then prints the remaining interactive steps below.
+
+### 2. Open the isolated session and log in
+
+```bash
+./run.sh shell
+```
+
+`shell` opens an interactive `claude` under `CLAUDE_CONFIG_DIR=$DOMO_HOME/.claude`
+(channels off, so it works before fakechat is installed). A fresh config dir does
+**not** inherit your personal login, so authenticate this instance once:
+
+```
+/login
+```
+
+The browser-OAuth credentials are stored **in the isolated dir** and reused by the
+persistent session — so no `CLAUDE_CODE_OAUTH_TOKEN` is needed for the POC. (A
+`setup-token` is only worth it later for a fully unattended/cron tier; see
+[Auth](#auth-token-optional).)
 
 ### 3. Complete the Google Calendar `/mcp` OAuth browser flow (once)
 
-There is **no headless registration** for the Google connector. In an interactive
-Domo session, run:
+Still inside `./run.sh shell` — there is **no headless registration** for the
+Google connector:
 
 ```
 /mcp
 ```
 
-and complete the Google OAuth browser flow for `google-calendar`. The stored token
+Complete the Google OAuth browser flow for `google-calendar`. The stored token
 lands in the isolated config dir and is reused by the persistent session (PLAN.md
 §9). Read-only scopes are expected:
 `calendar.calendarlist.readonly`, `calendar.events.readonly`,
@@ -129,14 +133,34 @@ lands in the isolated config dir and is reused by the persistent session (PLAN.m
 
 ### 4. Install the fakechat channel plugin (once)
 
-In an interactive Domo session (running under the same `CLAUDE_CONFIG_DIR`):
+Still inside `./run.sh shell`:
 
 ```
 /plugin marketplace add anthropics/claude-plugins-official
 /plugin install fakechat@claude-plugins-official
 ```
 
-Both land in `$DOMO_HOME/.claude`.
+Both land in `$DOMO_HOME/.claude`. Then exit the shell — you're ready to `start`.
+
+> **Channels preview consent.** The first time the persistent session enables
+> `--channels`, Claude may ask you to accept the research-preview consent. Because
+> `start` runs in a foreground TTY, accept it once interactively. This is **not**
+> the same as `--dangerously-skip-permissions` — Domo never passes that flag, since
+> it would bypass the `PreToolUse` allowlist hook (the security spine, PLAN.md §8).
+
+### Auth (token optional)
+
+For the POC, auth is the interactive `/login` above (stored in `$DOMO_HOME/.claude`).
+If you later want a fully unattended/cron run with no interactive login, mint a
+headless subscription token and let `run.sh` pick it up from the env or a
+gitignored file:
+
+```bash
+export CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)   # or persist in $DOMO_HOME/.env
+```
+
+It's a **subscription** token, not an API key — keep `ANTHROPIC_API_KEY` unset.
+**Never hardcode it in the repo.**
 
 ---
 
@@ -146,15 +170,16 @@ Both land in `$DOMO_HOME/.claude`.
 ./run.sh start
 ```
 
-This exports the same `CLAUDE_CONFIG_DIR` + `CLAUDE_CODE_OAUTH_TOKEN`, `cd`s to
-`$DOMO_HOME/workspace`, and execs the **one** persistent session:
+This exports the isolated `CLAUDE_CONFIG_DIR` (and a token if one is set), `cd`s to
+`$DOMO_HOME/workspace`, and execs the **one** persistent session in the foreground:
 
 ```
 claude --channels plugin:fakechat@claude-plugins-official
 ```
 
 `start` refuses to launch (clear error) if `$DOMO_HOME/.claude/settings.json` is
-missing (setup not run) or if the token is unset.
+missing (setup not run). It does **not** require a token — if none is set, it uses
+the interactive login stored during `./run.sh shell`.
 
 ### Preflight (recommended)
 
@@ -164,9 +189,9 @@ missing (setup not run) or if the token is unset.
 
 Read-only. Prints the resolved `CLAUDE_CONFIG_DIR`; asserts `settings.json` exists
 at the config dir and that its registered hook command path exists and is
-executable; confirms `jq` is on PATH; confirms `CLAUDE_CODE_OAUTH_TOKEN` is set and
-`ANTHROPIC_API_KEY` is **unset**; echoes the active allowlist. Exits non-zero on
-any failed assertion.
+executable; confirms `jq` is on PATH; reports auth (token **or** stored interactive
+login — either is fine); asserts `ANTHROPIC_API_KEY` is **unset**; echoes the active
+allowlist (and flags any write-capable entry). Exits non-zero on any failed assertion.
 
 ---
 
