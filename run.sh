@@ -276,7 +276,7 @@ Environment:
                            stored in the isolated config dir (the POC default).
   DOMO_HOME                (optional) base dir; default: this git checkout.
   FAKECHAT_PORT            (optional) fakechat UI port; default 8787.
-  DOMO_PERMISSION_MODE     (optional) permission mode; default bypassPermissions.
+  DOMO_PERMISSION_MODE     (optional) permission mode; default auto (classifier-gated).
 EOF
 }
 
