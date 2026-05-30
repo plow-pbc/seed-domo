@@ -1,7 +1,9 @@
 # Domo — a de-Plowed, agent-first household assistant
 
 > **Working name:** Domo (`seed-domo`). See [Naming](#naming).
-> **Status:** design + POC plan. Nothing built yet.
+> **Status:** design built. The `domo` CLI (background daemon + session resume) and a
+> custom **plow-chat** channel (the real texting surface) are implemented; `fakechat` is
+> demoted to a local test channel. See §10. Live runtime items are flagged verify-at-launch.
 > **One-liner:** Take the Plow "life-dashboard" — a scheduled household briefing that
 > reads your calendar/messages and pushes affirmations, a triage alert, a weekly
 > digest, and meeting nudges — and rebuild it **without Plow as a dependency**,
@@ -116,8 +118,9 @@ One always-on `claude --channels` session does everything; there is no separate
 
 ```
 the Mac (host-raw, subscription)
-└─ ONE persistent session:
-   claude --channels plugin:<fakechat|imessage|plow-chat>@…
+└─ ONE persistent session, run by the `domo` CLI as a background daemon:
+   claude --channels plugin:<plow-chat|fakechat|imessage> [--plugin-dir …] \
+          --permission-mode auto  --session-id/--resume <pinned-uuid>
 
    INTERACTIVE
      inbound channel event (owner asks about day / calendar)
@@ -130,7 +133,11 @@ the Mac (host-raw, subscription)
 
    Permissions: --permission-mode auto (classifier-gated auto mode; no custom allowlist — §8)
 
-   Isolation: CLAUDE_CONFIG_DIR=~/domo/.claude · own OAuth token · own workspace
+   Lifecycle: `domo start` (background, PTY-wrapped) / `stop` (tree-kill) / `status` / `logs`;
+              `domo shell` is the foreground TTY for one-time consent/login/debug.
+              shell + start share ONE pinned session UUID (resume) — see §10.
+
+   Isolation: CLAUDE_CONFIG_DIR=<domo-home>/.claude · own login/token · own workspace
 ```
 
 > **Briefing trigger — two options.** (1) `/loop` inside the persistent session
@@ -220,8 +227,13 @@ boundary problem (see §7).
   soft-block their risky *writes* but may allow *reads*. Keep the account's connected
   surface minimal until a Domo-specific guard returns.
 - **Run model:** channels need the session *open*, so run **one persistent `claude
-  --channels`** in tmux/launchd for everything — interactive chat *and* the
-  scheduled briefings (injected as events). There is no separate `-p` process.
+  --channels`** for everything — interactive chat *and* the scheduled briefings
+  (injected as events). There is no separate `-p` process. The **`domo` CLI** manages
+  this: `domo start` launches it as a detached **background daemon** (PTY-wrapped via
+  `/usr/bin/script` since macOS has no `setsid`, with a PID file + logfile; `stop`
+  tree-kills the orphaned PTY child), so no user-run tmux/launchd is required — though a
+  launchd `KeepAlive` wrapping `domo start` is the documented fallback if the
+  backgrounded session doesn't survive (verify-at-runtime, §10).
 - **Container boundary:** if you ever containerize the agent, the **built-in
   iMessage channel + `imsg` break** (they need host FDA + AppleScript). Network
   channels (fakechat/telegram/custom Plow-Chat) + the Google MCP are
@@ -328,39 +340,92 @@ that `/login`s with the same account. No `claude mcp add`, no GCP OAuth client, 
 
 ---
 
-## 10. POC plan (decided: fakechat first)
+## 10. The build — `domo` CLI + custom plow-chat channel (fakechat demoted to test)
 
-**Goal:** prove the whole loop with the comms layer that has zero build cost, so any
-failure is unambiguously in isolation/calendar/security — not a half-built channel.
+The POC proved the loop on `fakechat` (localhost UI, zero build cost). This pass
+promotes the **real surface**: a **custom Plow Chat channel** (a real SMS/texting line
+with verified-member access control) plus a **`domo` CLI** that runs the session as a
+**background daemon** with **session resume**. `fakechat` is now a **test channel** —
+selectable for local debugging with no Plow activation.
 
-**The loop:**
+**The loop (real surface):**
 > Spin up an isolated Domo Claude → Google Calendar via the claude.ai **connector** +
-> the fakechat channel, running in **auto mode** (no allowlist) → type *"what's on my
-> calendar today?"* in the fakechat UI → it calls the calendar connector → replies in
-> the browser with your events.
+> the **plow-chat** channel, in **auto mode** → **text the bound phone line** *"what's
+> on my calendar today?"* → it calls the calendar connector → **replies as a text**
+> through the channel's `reply` tool (`POST /v1/chats/{uid}/messages`).
 
-**Build (the `seed-domo` POC artifacts):**
-1. `run.sh` — sets `CLAUDE_CONFIG_DIR`/workspace; `setup` (install fakechat plugin),
-   `shell` (interactive `/login`), `start` (persistent `claude --channels … 
-   --permission-mode auto`), `doctor`.
-2. `README.md` — one-time interactive steps (connect calendar at claude.ai, `/login`)
-   vs the persistent run.
+**Build (the `seed-domo` artifacts):**
+1. **`channels/plow-chat/`** — a custom channel plugin in bun/TS mirroring `fakechat`'s
+   contract exactly, swapping only the transport: a **Plow Chat WSS client + REST
+   sender**, **no localhost listener** (so no port to bind/conflict). Packaging:
+   `.claude-plugin/plugin.json` + `.mcp.json` (bun launch, like fakechat) + `server.ts`.
+   - **INBOUND:** mint ticket `POST /v1/ws/ticket` → connect `wss?ticket=…` → on
+     `message_received` push a `notifications/claude/channel` event (ignoring
+     `direction=='outbound'` echoes). On disconnect: re-mint + backfill via
+     `GET /v1/chats/{uid}/messages`, de-duped by message uid against a persisted
+     `last_seen.json` high-water mark (so a restart does **not** replay history).
+   - **OUTBOUND:** the `reply` tool → `POST /v1/chats/{uid}/messages` (`409
+     chat_not_ready` surfaces an error; not retried until the chat is active).
+   - **Secrets:** read from a chmod-600 state file whose path is in `PLOW_CHAT_STATE`
+     (mirrors how fakechat receives `FAKECHAT_PORT`). If state is missing the server
+     still starts the stdio transport so `claude --channels` loads cleanly, but stays
+     unconnected and `reply` returns `isError` until state appears — it never crashes
+     the transport. State is re-read lazily on each send/reconnect (late-activation
+     pickup, best-effort).
+2. **`domo`** — the orchestrator CLI (evolves `run.sh`; keeps its isolation, auto-mode,
+   optional-token auth, `ANTHROPIC_API_KEY`-unset guard). Commands:
+   `setup` (dirs + workspace + **pinned session UUID** in `.claude/domo.json` + channel
+   loadable via `--plugin-dir`), `activate` (the Plow handshake in bash+curl: POST
+   activate → print the `display_code`/`send_to` to text → poll redeem → write the
+   chmod-600 `{base_url,token,chat_uid}` state), `shell` (foreground TTY: one-time
+   channels consent / `/login` / debug), `start` (the **same** session in the
+   **background**, detached, PID + logfile), `stop` (tree-kill the daemon + sweep the
+   stray channel child), `status`, `logs`, `doctor`.
+3. **`README.md`** — operator guide for the above.
 
-*(Removed: the `hooks/allowlist-guard.sh` default-deny hook + `config/settings.json` —
-see §8. They can return when a real authorization policy does.)*
+- **Session resume — one pinned UUID** shared by `shell` and `start` so they are ONE
+  continuous conversation. `setup` mints it; first run launches `--session-id <uuid>`,
+  later runs `--resume <uuid>` (detected by whether the workspace project-dir jsonl
+  exists). `--permission-mode auto` is kept in every path.
+- **Channel selector:** `DOMO_CHANNEL=plow-chat` (default, the real surface) | `fakechat`
+  (local test, marketplace-installed, no Plow activation). The channels flag and
+  per-channel env (`PLOW_CHAT_STATE` vs `FAKECHAT_PORT`) follow from the selection.
+
+*(Still removed: the `hooks/allowlist-guard.sh` default-deny hook + `config/settings.json`
+— see §8. They return when a real authorization policy does; do NOT reintroduce as the
+default.)*
 
 **Acceptance criteria:**
-1. Inbound text arrives as a `<channel source="fakechat">` event.
-2. Claude reads the calendar via the connector (`mcp__claude_ai_Google_Calendar__*`).
-3. Reply lands in the fakechat UI with the correct events — no prompt/hang.
+1. A texted message arrives as a `<channel source="plow-chat" chat_id="…"
+   message_id="…">` event (meta carries the sender's `provider_key`).
+2. Claude reads the calendar via the connector (`mcp__claude_ai_Google_Calendar__*`),
+   auto-approved by auto mode.
+3. The reply lands **as a text** (`POST /v1/chats/{uid}/messages`) with the correct
+   events — no prompt/hang.
+4. `./domo stop && ./domo start` resumes the SAME session and does NOT replay chat
+   history to Claude on restart.
 
-**Then:** swap the channel from fakechat → built-in `imessage` (real phone loop,
-still Plow-free) → optionally a **custom Plow Chat channel** (dedicated agent line +
-verified-member auth). Everything else stays put.
+**Runtime-verify items (could not be checked statically; no token/`claude` run):**
+- A backgrounded `claude --channels` survives without a TTY. `start` wraps it in a
+  `/usr/bin/script` PTY (macOS has no `setsid`); `stop` therefore **tree-kills** because
+  the PTY child is orphaned in its own session when the wrapper dies. Escape hatch:
+  `DOMO_NO_PTY=1`.
+- `--session-id`/`--resume` **compose with** `--channels`; and a `--plugin-dir`-loaded
+  channel is addressable as `plugin:plow-chat`. Escape hatch: `DOMO_SESSION_FALLBACK=1`
+  (resume the latest jsonl by mtime); fallback for addressing is a one-off local
+  marketplace.
+- The live Plow loop (activate handshake, WSS reconnect/backfill, outbound-echo
+  filtering, the `last_seen` cursor — the messages endpoint exposes no documented
+  `after`/`since` param, so de-dup is client-side; the message timestamp field name is
+  unconfirmed).
 
 **One-time interactive steps (can't be headless):** connect the Google Calendar
-connector at claude.ai; `/login`; channel install/pairing. After that the listener
-runs unattended.
+connector at claude.ai; `./domo shell` then `/login` (+ accept the channels-preview
+consent); `./domo activate` (text the code). After that the daemon runs unattended.
+
+> **Built-in `imessage`** (real phone loop, Plow-free, but Mac-only chat.db + FDA +
+> AppleScript) remains a non-Plow alternative to plow-chat; the channel contract is the
+> same, so swapping `DOMO_CHANNEL` is the only change.
 
 ---
 
@@ -381,6 +446,23 @@ runs unattended.
   First-party `calendarmcp.googleapis.com` is unusable from Claude Code (DCR failure);
   community `@cocal/google-calendar-mcp` is the backup.
 - **Channels = research preview** — flag/protocol may change.
+- **Backgrounded session survival** — whether a PTY-wrapped `claude --channels` stays
+  alive headless after the launching shell exits (and events still flow) is
+  verify-at-runtime; `DOMO_NO_PTY=1` and a launchd `KeepAlive` over `domo start` are the
+  fallbacks (§10).
+- **Session resume composes with channels** — whether `--session-id`/`--resume` work
+  alongside `--channels` (and a `--plugin-dir` channel is addressable as
+  `plugin:plow-chat`) is verify-at-runtime; `DOMO_SESSION_FALLBACK=1` (latest-jsonl
+  resume) and a one-off local marketplace are the fallbacks (§10).
+- **Live Plow loop** — the `activate` handshake, WSS reconnect/backfill, outbound-echo
+  filtering, and the client-side `last_seen` cursor (no documented `after`/`since` param;
+  message timestamp field name unconfirmed) are statically reviewed but not exercised
+  (no token; calling would hang).
+- **Untrusted inbound is now real.** With plow-chat the inbound is **real texts from a
+  bound phone line**, not the local-only fakechat UI — so the prompt-injection surface is
+  live. Plow's verified-member access control bounds *who* can text the line, but auto
+  mode is still the only thing scoping *what Domo does* with that input. Keep the safe
+  core read+reply-to-owner until a Domo-specific guard returns (above).
 - **Briefing trigger** — whether `/loop` composes with channel event-handling in one
   session is unverified; external `launchd`-into-channel trigger is the fallback.
 - **Authorization gap when interactive:** the moment Domo can *send to others* or
