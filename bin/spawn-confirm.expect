@@ -1,0 +1,43 @@
+#!/usr/bin/env expect -f
+#
+# spawn-confirm.expect — launch a command under a PTY, answer Claude Code's
+# once-per-launch `--dangerously-load-development-channels` confirmation TUI
+# (option 1, "I am using this for local development", is pre-selected → send Enter),
+# then keep the session alive forever as the persistent channel listener.
+#
+# Why: custom channels aren't on the research-preview allowlist, so they load via
+# the development flag, which prompts EVERY launch. A backgrounded daemon has no
+# terminal to answer it; this driver does. `-p` mode skips the prompt but exits
+# (one-shot), so it can't be the daemon — hence this PTY driver.
+#
+# Usage:  expect spawn-confirm.expect <command> [args...]
+# The whole argv (after this script) is the command to spawn.
+#
+# The confirmation menu renders each word with cursor-positioning escapes, so the
+# words are NOT contiguous in the byte stream. "cancel" (from "Esc to cancel", the
+# last line) IS contiguous, so we anchor on it; a timeout fallback sends Enter anyway.
+
+set timeout 90
+
+# Spawn the real command with a PTY so Claude runs interactive (and thus shows the
+# prompt we can answer). -noecho keeps our own argv out of the log.
+eval spawn -noecho $argv
+
+# Answer the dev-channels confirmation. Then answer one more potential startup
+# prompt (e.g. the channels-preview consent) if it appears shortly after.
+expect {
+  "cancel"  { send "\r" }
+  eof       { exit 0 }
+  timeout   { send "\r" }
+}
+
+set timeout 8
+expect {
+  "cancel"  { send "\r" }
+  eof       { exit 0 }
+  timeout   { }
+}
+
+# Steady state: keep the persistent session running until claude exits on its own.
+set timeout -1
+expect eof

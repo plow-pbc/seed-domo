@@ -70,8 +70,9 @@ DOMO_CHANNEL="${DOMO_CHANNEL:-plow-chat}"
 PLOW_DIR="$CONFIG_DIR/plow-chat"                 # chmod-700 dir holding secrets
 PLOW_STATE_FILE="$PLOW_DIR/state.json"           # redeemed {base_url,token,chat_uid}
 PLOW_ACTIVATION_FILE="$PLOW_DIR/activation.json" # transient pre-token secret
-PLOW_CHANNEL_DIR="$REPO_ROOT/channels/plow-chat" # local plugin dir (--plugin-dir)
+PLOW_CHANNEL_DIR="$REPO_ROOT/channels/plow-chat" # channel server dir (registered as an MCP server)
 PLOW_BASE_URL="${PLOW_CHAT_BASE_URL:-https://api.plow.co}"
+SPAWN_CONFIRM="$REPO_ROOT/bin/spawn-confirm.expect" # drives the dev-channels confirmation for `start`
 
 # --- fakechat (marketplace) config, carried from run.sh ---
 MARKETPLACE_SRC="anthropics/claude-plugins-official"
@@ -603,12 +604,27 @@ cmd_start() {
     printf 'channel=%s  permission=%s  argv=%s\n' "$DOMO_CHANNEL" "$PERMISSION_MODE" "${CLAUDE_ARGV[*]}"
   } >>"$LOG_FILE" 2>&1
 
+  # A custom (development) channel shows a confirmation TUI on EVERY launch that a
+  # backgrounded daemon can't answer. Detect the dev-channels flag and, if present,
+  # drive the launch through expect (answers the prompt + keeps the session alive).
+  local needs_confirm=0 a
+  for a in "${CLAUDE_ARGV[@]}"; do
+    [[ "$a" == "--dangerously-load-development-channels" ]] && needs_confirm=1
+  done
+
   if [[ "${DOMO_NO_PTY:-0}" == "1" ]]; then
     # Plain detached background (verify-at-runtime: may exit on stdin EOF).
     # No PTY wrapper, so the recorded pid IS the claude process — stop can TERM it
-    # directly and there is no orphaned child.
+    # directly and there is no orphaned child. (Won't answer a dev-channels prompt.)
     nohup "${CLAUDE_ARGV[@]}" </dev/null >>"$LOG_FILE" 2>&1 &
+  elif [[ "$needs_confirm" == "1" ]] && command -v expect >/dev/null 2>&1; then
+    # expect gives claude a PTY, sends Enter on the dev-channels confirmation, then
+    # keeps the session alive. The recorded pid is the expect wrapper; its argv
+    # carries the same session UUID, so stop's signature pkill reaps wrapper + claude.
+    log "Driving the dev-channels confirmation via expect."
+    nohup expect -f "$SPAWN_CONFIRM" "${CLAUDE_ARGV[@]}" </dev/null >>"$LOG_FILE" 2>&1 &
   else
+    [[ "$needs_confirm" == "1" ]] && warn "expect not found — the dev-channels confirmation will hang the daemon. Install expect, or run './domo shell'."
     # PTY-wrapped via macOS `script` so claude sees a controlling tty (no stdin EOF).
     # ⚠️ The recorded pid here is the `script` WRAPPER, not claude. On macOS the
     # PTY child (claude) runs in its OWN process group / session, so killing the
