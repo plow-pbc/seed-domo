@@ -112,6 +112,27 @@ require_claude() {
   command -v claude >/dev/null 2>&1 || die "the 'claude' CLI is not on PATH. Install Claude Code first."
 }
 
+# fakechat's bun server can outlive the claude session (orphaned to launchd) and keep
+# holding FAKECHAT_PORT, which makes the NEXT start show 'fakechat: failed'. Before
+# launching, free the port if a stale fakechat (`bun … server.ts`) holds it; warn (but
+# don't kill) if some OTHER process holds it (e.g. OrbStack/Wrangler on 8787).
+free_fakechat_port() {
+  command -v lsof >/dev/null 2>&1 || return 0
+  local pids pid cmd
+  pids="$(lsof -nP -tiTCP:"$FAKECHAT_PORT" -sTCP:LISTEN 2>/dev/null || true)"
+  for pid in $pids; do
+    cmd="$(ps -o command= -p "$pid" 2>/dev/null || true)"
+    if printf '%s' "$cmd" | grep -q 'server\.ts'; then
+      warn "Freeing port $FAKECHAT_PORT: killing stale fakechat server (pid $pid)."
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+    else
+      warn "Port $FAKECHAT_PORT is held by a non-fakechat process (pid $pid: ${cmd%% *})."
+      warn "fakechat will fail to bind — pick a free port: FAKECHAT_PORT=<n> ./run.sh start"
+    fi
+  done
+}
+
 # ---------------------------------------------------------------------------
 # setup — one-time bootstrap (idempotent)
 # ---------------------------------------------------------------------------
@@ -174,8 +195,10 @@ cmd_start() {
   cd "$WORKSPACE"
 
   # fakechat reads FAKECHAT_PORT from the environment; export it so the demo UI
-  # binds where we expect and we can print the right URL.
+  # binds where we expect and we can print the right URL. Clear any stale fakechat
+  # server still holding the port from a previous run.
   export FAKECHAT_PORT
+  free_fakechat_port
   log "Starting persistent session in $WORKSPACE"
   log "Channels: $CHANNELS_FLAG"
   log "Permission mode: $PERMISSION_MODE (classifier-gated; safe calls auto-approved)"
