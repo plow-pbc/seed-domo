@@ -22,8 +22,11 @@ share **one pinned session UUID**, so they are a single continuous conversation.
 ```
 the Mac (host-raw, subscription)
 └─ ONE persistent session (auto mode):
-   claude --channels plugin:plow-chat --plugin-dir channels/plow-chat \
+   claude --dangerously-load-development-channels server:plow-chat \
           --permission-mode auto  --session-id <pinned-uuid>   # or --resume on later runs
+          # plow-chat is registered as an MCP server by `domo setup` (claude mcp add);
+          # custom channels aren't on the preview allowlist, so they load via the
+          # --dangerously-load-development-channels server:<name> form (channels-reference).
 
    INBOUND   plow-chat WSS  message_received  ->  <channel source="plow-chat"> event
    OUTBOUND  reply tool     ->  POST /v1/chats/{uid}/messages  (a real text to the owner)
@@ -199,9 +202,13 @@ The UUID is minted once by `setup` and stored in `.claude/domo.json`. Both `shel
 - **first run** (no session jsonl under the workspace project dir yet) → `--session-id <uuid>`
 - **subsequent** (jsonl exists) → `--resume <uuid>`
 
-⚠️ **Verify-at-runtime** that `--session-id`/`--resume` **compose with** `--channels`,
-and that a `--plugin-dir`-loaded channel is addressable as `plugin:plow-chat`. The flags
-each exist in `claude --help`, but their composition can't be checked statically. If
+**Resolved:** the channel loads via `--dangerously-load-development-channels server:plow-chat`
+(custom channels aren't on the preview allowlist; the `plugin:<name>@<marketplace>` form
+needs a marketplace). `setup` registers the `plow-chat` MCP server (`claude mcp add`) so
+`server:plow-chat` resolves; `claude mcp list` shows it ✓ Connected.
+
+⚠️ **Verify-at-runtime** that `--session-id`/`--resume` **compose with** the channel flag.
+The flags each exist in `claude --help`, but their composition can't be checked statically. If
 resume doesn't compose with channels, set `DOMO_SESSION_FALLBACK=1` — `domo` then resumes
 the **latest jsonl by mtime** under the workspace project dir and persists that id back
 to `domo.json`. `--permission-mode auto` is kept in every path.

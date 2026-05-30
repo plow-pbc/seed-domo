@@ -266,12 +266,15 @@ PLUGIN_DIR=""
 prepare_channel_env() {
   case "$DOMO_CHANNEL" in
     plow-chat)
-      CHANNELS_FLAG="plugin:plow-chat"
-      PLUGIN_DIR="$PLOW_CHANNEL_DIR"
+      # plow-chat is a CUSTOM channel (not on the research-preview allowlist), so it
+      # loads via --dangerously-load-development-channels server:<name>, NOT --channels
+      # / --plugin-dir. The MCP server named 'plow-chat' is registered by `domo setup`
+      # (claude mcp add), so the `server:` form resolves. (cite channels-reference.md.)
+      CHANNELS_FLAG="server:plow-chat"
       # The server reads its secrets from this absolute path (mirrors FAKECHAT_PORT).
       export PLOW_CHAT_STATE="$PLOW_STATE_FILE"
-      CHANNEL_ARGS=(--channels "$CHANNELS_FLAG" --plugin-dir "$PLUGIN_DIR")
-      log "Channel: plow-chat (--plugin-dir $PLUGIN_DIR); PLOW_CHAT_STATE=$PLOW_CHAT_STATE"
+      CHANNEL_ARGS=(--dangerously-load-development-channels "$CHANNELS_FLAG")
+      log "Channel: plow-chat (dev channel server:plow-chat); PLOW_CHAT_STATE=$PLOW_CHAT_STATE"
       [[ -f "$PLOW_STATE_FILE" ]] || warn "plow-chat state.json missing — run './domo activate' (the channel loads but reply errors until then)."
       ;;
     fakechat)
@@ -331,7 +334,19 @@ cmd_setup() {
         if [[ -f "$f" ]]; then log "OK   channel file present: $f"; else warn "MISS channel file absent: $f"; missing=1; fi
       done
       [[ "$missing" -eq 0 ]] || die "plow-chat channel dir incomplete at $PLOW_CHANNEL_DIR."
-      log "plow-chat loads via --plugin-dir $PLOW_CHANNEL_DIR (no marketplace install)."
+      # Register plow-chat as a manually-configured MCP server so `server:plow-chat`
+      # resolves for --dangerously-load-development-channels (NOT --plugin-dir). The
+      # spawned server inherits PLOW_CHAT_STATE from the env domo exports at launch.
+      # Use the absolute channel dir (no ${CLAUDE_PLUGIN_ROOT}, which is plugin-only).
+      log "Registering MCP server 'plow-chat' (user scope) -> bun start in $PLOW_CHANNEL_DIR ..."
+      claude mcp remove plow-chat </dev/null >/dev/null 2>&1 || true   # idempotent: drop any stale registration
+      if claude mcp add plow-chat --scope user -- \
+           bun run --cwd "$PLOW_CHANNEL_DIR" --shell=bun --silent start </dev/null; then
+        log "OK   plow-chat MCP server registered."
+      else
+        warn "claude mcp add plow-chat returned non-zero — check 'claude mcp list'."
+      fi
+      log "plow-chat loads via --dangerously-load-development-channels server:plow-chat."
       ;;
     fakechat)
       ensure_auth
@@ -512,15 +527,15 @@ cmd_shell() {
 }
 
 # Compute a pkill -f pattern that uniquely identifies THIS instance's claude
-# process, scoped tightly enough to never match unrelated `claude` invocations:
-#   - plow-chat: the absolute --plugin-dir path (contains this repo path).
-#   - fakechat : the marketplace channels flag.
-# Both are further qualified by the pinned session UUID when one is in use, so two
-# Domo instances under different DOMO_HOME never reap each other.
+# process. The pinned session UUID is the tightest signature — it appears in the
+# argv as `--session-id <uuid>` / `--resume <uuid>` and is unique per instance, so
+# two Domo instances under different DOMO_HOME never reap each other. Fall back to
+# the channel signature only if no pinned UUID is in use (e.g. DOMO_SESSION_FALLBACK).
 daemon_kill_pattern() {
   local sid; sid="$(read_session_id)"
+  if [[ -n "$sid" ]]; then printf '%s' "$sid"; return; fi
   case "$DOMO_CHANNEL" in
-    plow-chat) printf '%s' "$PLOW_CHANNEL_DIR" ;;
+    plow-chat) printf '%s' "server:plow-chat" ;;
     fakechat)  printf '%s' "$FAKECHAT_CHANNELS_FLAG" ;;
     *)         printf '%s' "$WORKSPACE" ;;
   esac
@@ -681,9 +696,11 @@ cmd_stop() {
   # unrelated processes (the channel server is a separate child of claude).
   case "$DOMO_CHANNEL" in
     plow-chat)
-      if pgrep -f "$PLOW_CHANNEL_DIR/server.ts" >/dev/null 2>&1; then
+      # The channel server is spawned as `bun run --cwd $PLOW_CHANNEL_DIR … start`,
+      # so its argv contains the channel dir path — match on that (repo-scoped).
+      if pgrep -f "$PLOW_CHANNEL_DIR" >/dev/null 2>&1; then
         warn "Sweeping stray plow-chat channel server(s)."
-        pkill -f "$PLOW_CHANNEL_DIR/server.ts" 2>/dev/null || true
+        pkill -f "$PLOW_CHANNEL_DIR" 2>/dev/null || true
       fi
       ;;
     fakechat)
@@ -710,7 +727,7 @@ cmd_status() {
   log "session_id:      ${sid:-<none>}"
   log "permission mode: $PERMISSION_MODE"
   case "$DOMO_CHANNEL" in
-    plow-chat) log "channels flag:   plugin:plow-chat"; log "plugin-dir:      $PLOW_CHANNEL_DIR" ;;
+    plow-chat) log "channel flag:    --dangerously-load-development-channels server:plow-chat"; log "channel dir:     $PLOW_CHANNEL_DIR" ;;
     fakechat)  log "channels flag:   $FAKECHAT_CHANNELS_FLAG"; log "fakechat port:   $FAKECHAT_PORT" ;;
   esac
 
@@ -814,7 +831,7 @@ cmd_doctor() {
   # Channel-specific.
   case "$DOMO_CHANNEL" in
     plow-chat)
-      log "channels flag: plugin:plow-chat (--plugin-dir $PLOW_CHANNEL_DIR)"
+      log "channel flag: --dangerously-load-development-channels server:plow-chat (MCP server registered via 'claude mcp add')"
       local missing=0
       for f in "$PLOW_CHANNEL_DIR/.claude-plugin/plugin.json" "$PLOW_CHANNEL_DIR/.mcp.json" "$PLOW_CHANNEL_DIR/server.ts"; do
         if [[ -f "$f" ]]; then log "OK   channel file: $(basename "$f")"; else warn "MISS channel file: $f"; missing=1; ok=1; fi
