@@ -96,6 +96,25 @@ log()  { printf '[domo] %s\n' "$*" >&2; }
 warn() { printf '[domo] WARNING: %s\n' "$*" >&2; }
 die()  { printf '[domo] ERROR: %s\n' "$*" >&2; exit 1; }
 
+# strip_ansi — filter stdin->stdout, removing the ANSI/control noise the claude
+# TUI writes into domo.log (CSI/OSC/DCS escapes, charset designators, carriage
+# returns, stray control bytes). Dumping that raw can flip the terminal into a
+# mode where Ctrl+C stops working; stripping it keeps the terminal sane. Keeps
+# TAB (\t) and NL (\n). Falls back to a passthrough `cat` if perl is missing.
+strip_ansi() {
+  if command -v perl >/dev/null 2>&1; then
+    perl -pe 'BEGIN{$|=1}
+      s/\e\[[0-9;?]*[ -\/]*[@-~]//g;       # CSI: colors, cursor moves, ?modes
+      s/\e\][^\a\e]*(?:\a|\e\\)//g;          # OSC: title/hyperlink, BEL/ST term
+      s/\e[PX^_].*?(?:\a|\e\\)//g;           # DCS/SOS/PM/APC strings
+      s/\e[ -\/]*[0-~]//g;                   # charset designators + short escapes
+      s/[\r\x00-\x08\x0b\x0c\x0e-\x1f]//g;   # stray CR + control bytes (keep \t \n)
+    '
+  else
+    cat
+  fi
+}
+
 # Export the isolated config dir — scopes plugins/connectors/sessions/auth/channel
 # state to the Domo instance. MUST be exported in every subcommand that launches claude.
 export_config_dir() {
@@ -649,11 +668,11 @@ cmd_start() {
   sleep 1
   if kill -0 "$pid" 2>/dev/null; then
     log "Daemon started (pid $pid)."
-    log "Tail logs with: ./domo logs    Stop with: ./domo stop"
+    log "Transcript feed: ./domo logs    Stop with: ./domo stop"
   else
     rm -f "$PID_FILE" "$SIG_FILE"
     die "daemon exited immediately — see $LOG_FILE (last lines below):
-$(tail -n 20 "$LOG_FILE" 2>/dev/null || true)"
+$(tail -n 20 "$LOG_FILE" 2>/dev/null | strip_ansi || true)"
   fi
 }
 
@@ -791,20 +810,116 @@ cmd_status() {
   fi
 }
 
+# resolve_transcript — path to the session transcript jsonl. Prefers the pinned
+# session UUID; falls back to the newest jsonl by mtime under the project dir
+# (covers the resume-spawned-a-new-file case). Empty if none exists yet.
+resolve_transcript() {
+  local sid tf
+  sid="$(read_session_id)"
+  tf="$PROJECTS_DIR/$sid.jsonl"
+  if [[ -n "$sid" && -f "$tf" ]]; then printf '%s' "$tf"; return; fi
+  ls -t "$PROJECTS_DIR"/*.jsonl 2>/dev/null | head -1
+}
+
+# tz_offset_seconds — local UTC offset in seconds (e.g. -25200 for PDT), so the
+# transcript renderer can show wall-clock local time. 0 if undeterminable.
+tz_offset_seconds() {
+  local z sign hh mm off
+  z="$(date +%z 2>/dev/null)" || { printf '0'; return; }
+  [[ "$z" =~ ^[+-][0-9]{4}$ ]] || { printf '0'; return; }
+  sign="${z:0:1}"; hh="${z:1:2}"; mm="${z:3:2}"
+  off=$((10#$hh * 3600 + 10#$mm * 60)); [[ "$sign" == "-" ]] && off=$((-off))
+  printf '%s' "$off"
+}
+
+# jq renderer: turn raw transcript jsonl lines into a readable conversation feed
+# — 📥 inbound texts, 📤 outbound replies, ⚙ tool calls, 🤖 assistant notes.
+# Read with -R so a malformed line is skipped (fromjson?) instead of aborting a
+# live follow. Everything else (modes, attachments, tool_results) renders empty.
+LOGS_JQ='
+def clk($ts):
+  ($ts // "") as $raw
+  | ($raw | sub("\\.[0-9]+Z$";"Z")) as $c
+  | (try ($c | fromdateiso8601 + $off | strftime("%m/%d %H:%M"))
+     catch ($raw[5:16] | gsub("T";" ")));
+(fromjson? // empty)
+| (clk(.timestamp)) as $T
+| if .type=="user" then
+    (.message.content) as $c
+    | if ($c|type)=="string" then
+        if ($c|test("<channel")) then
+          (($c|capture("user=\"(?<u>[^\"]*)\"")? | .u) // "You") as $who
+          | ($c | capture("(?s)>(?<b>.*)</channel>") | .b
+             | gsub("^\\s+|\\s+$";"") | gsub("\n";" ")) as $txt
+          | "\($T)  📥 \($who): \($txt)"
+        else "\($T)  ⌨️  \($c|gsub("\n";" ")|.[0:200])" end
+      else empty end
+  elif .type=="assistant" then
+    ( .message.content[]?
+      | if .type=="text" and (.text|length>0) then
+          "\($T)  🤖 \(.text|gsub("\n";" "))"
+        elif .type=="tool_use" then
+          if (.name|test("reply$")) then
+            "\($T)  📤 Domo: \((.input.text // .input.body // "")|gsub("\n";" "))"
+          elif (.name|test("^(ToolSearch|Bash|Read|Glob|Grep|Edit|Write|TodoWrite|Task)$")) then empty
+          else "\($T)  ⚙  \(.name|sub("^mcp__";"")|sub("^claude_ai_";"")|gsub("__";" · ")|gsub("_";" "))" end
+        else empty end )
+  else empty end
+'
+
 # ---------------------------------------------------------------------------
-# logs — tail the daemon logfile.
+# logs — readable view of the session. Default renders the TRANSCRIPT jsonl
+# (clean 📥/📤/⚙ conversation feed); --raw shows the PTY/TUI capture (escape-
+# stripped) as a launch-debugging escape hatch. Follows by default; --no-follow
+# prints once. Ctrl+C always exits cleanly (trap restores the terminal + reaps
+# the tail child) — the raw TUI escapes are what used to make Ctrl+C appear dead.
 # ---------------------------------------------------------------------------
 cmd_logs() {
-  local follow=1
-  [[ "${1:-}" == "--no-follow" ]] && follow=0
-  if [[ ! -f "$LOG_FILE" ]]; then
-    log "no log yet; run './domo start'."
-    return 0
+  local follow=1 raw=0 a
+  for a in "$@"; do
+    case "$a" in
+      --no-follow|-n) follow=0 ;;
+      --raw)          raw=1 ;;
+      -h|--help)
+        printf 'usage: domo logs [--raw] [--no-follow]\n  default: readable transcript feed   --raw: PTY/TUI capture (stripped)\n'
+        return 0 ;;
+      *) warn "logs: ignoring unknown arg '$a'" ;;
+    esac
+  done
+  if [[ "$raw" -eq 0 ]] && ! command -v jq >/dev/null 2>&1; then
+    warn "jq not found — showing the raw TUI log instead."
+    raw=1
   fi
-  if [[ "$follow" -eq 1 ]]; then
-    exec tail -f "$LOG_FILE"
+
+  # Restore the terminal on the way out (Ctrl+C included): stty sane + reset
+  # SGR/cursor/alt-screen/bracketed-paste. Also guarantees the tail child is
+  # reaped when you Ctrl+C out of follow mode.
+  local restore='stty sane 2>/dev/null; printf "\033[0m\033[?25h\033[?1049l\033[?2004l\n" 2>/dev/null'
+
+  # Pick the source + the renderer (a command array read from the source).
+  local src; local renderer=()
+  if [[ "$raw" -eq 1 ]]; then
+    if [[ ! -f "$LOG_FILE" ]]; then log "no raw log yet; run './domo start'."; return 0; fi
+    src="$LOG_FILE"; renderer=(strip_ansi)
   else
-    exec tail -n 200 "$LOG_FILE"
+    src="$(resolve_transcript)"
+    if [[ -z "$src" || ! -f "$src" ]]; then
+      log "no transcript yet; run './domo start' and text the assistant."
+      return 0
+    fi
+    local off; off="$(tz_offset_seconds)"
+    renderer=(jq -rR --unbuffered --argjson off "$off" "$LOGS_JQ")
+  fi
+
+  if [[ "$follow" -eq 1 ]]; then
+    trap "$restore; exit 0" INT TERM HUP
+    tail -n 400 -f "$src" | "${renderer[@]}"
+    eval "$restore"
+    trap - INT TERM HUP
+  elif [[ "$raw" -eq 1 ]]; then
+    tail -n 200 "$src" | "${renderer[@]}"
+  else
+    "${renderer[@]}" "$src"   # full transcript, rendered once
   fi
 }
 
@@ -887,7 +1002,8 @@ Commands:
   start            BACKGROUND detached daemon (PID file + logfile). Same pinned session.
   stop             Kill the daemon + sweep stray channel child.
   status [--assert] Resolved config + daemon liveness + channel state (no secrets).
-  logs [--no-follow] Tail the daemon logfile.
+  logs [--raw] [--no-follow]
+                   Readable transcript feed (📥/📤/⚙). --raw = PTY/TUI capture.
   doctor           Read-only preflight; non-zero exit on any failed assertion.
 
 Environment:
