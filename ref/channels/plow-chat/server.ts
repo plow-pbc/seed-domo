@@ -317,10 +317,18 @@ function handleInboundMessage(message: any, state: PlowState | null, deliver_ = 
   // time (finding #11; field name runtime-unverified).
   const ts = String(message.created_at ?? message.created ?? message.ts ?? new Date().toISOString())
   const providerKey = String(sender.provider_key ?? '')
+  // Sender attribution: tag the channel notification with the inbound sender's
+  // display name when present so a group chat surfaces WHO is talking; fall back
+  // to "You" only when absent. Strip `"` `<` `>` and newlines so a name like
+  // `Al "ace" <King>` can never break out of the attribute or the tag when
+  // Claude renders this meta as a <channel ... user="..."> element — renderer-
+  // agnostic, no attribute- or tag-injection regardless of how it's quoted.
+  const displayName = String(sender.display_name ?? '').replace(/["<>\r\n]/g, '').trim()
+  const user = displayName || 'You'
   deliver(String(message.body ?? ''), {
     chat_id: chatId,
     message_id: uid,
-    user: String(sender.display_name ?? sender.uid ?? 'user'),
+    user,
     ts,
     // provider_key (the underlying texting identity / phone number) so Claude can
     // distinguish or whitelist by sender (finding #8).

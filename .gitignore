@@ -23,8 +23,8 @@
 /.claude/run/domo.pid
 
 # Channel build artifacts (the bun server installs deps at launch).
-/channels/plow-chat/node_modules/
-/channels/plow-chat/bun.lock
+/ref/channels/plow-chat/node_modules/
+/ref/channels/plow-chat/bun.lock
 
 .DS_Store
 

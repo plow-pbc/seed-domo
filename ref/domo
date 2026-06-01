@@ -9,7 +9,7 @@
 # or as a detached BACKGROUND daemon (`start`/`stop`/`status`/`logs`). shell and start
 # share ONE pinned session UUID so they are a single continuous conversation.
 #
-# Authoritative design: ../PLAN.md and the build contract that produced this file.
+# Authoritative design: ../docs/PLAN.md and the build contract that produced this file.
 #
 # Permission posture: `--permission-mode auto` (classifier-gated). No custom PreToolUse
 # allowlist (that was intentionally removed — do NOT reintroduce it). bypassPermissions
@@ -38,7 +38,7 @@ set -euo pipefail
 
 # REPO_ROOT is resolved from this script's own location so the build is portable.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$SCRIPT_DIR"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # DOMO_HOME is the isolated Claude home for this instance. Defaults to THIS checkout,
 # so Domo's config / auth / sessions / plugins / channel state live entirely inside
@@ -70,9 +70,9 @@ DOMO_CHANNEL="${DOMO_CHANNEL:-plow-chat}"
 PLOW_DIR="$CONFIG_DIR/plow-chat"                 # chmod-700 dir holding secrets
 PLOW_STATE_FILE="$PLOW_DIR/state.json"           # redeemed {base_url,token,chat_uid}
 PLOW_ACTIVATION_FILE="$PLOW_DIR/activation.json" # transient pre-token secret
-PLOW_CHANNEL_DIR="$REPO_ROOT/channels/plow-chat" # channel server dir (registered as an MCP server)
+PLOW_CHANNEL_DIR="$SCRIPT_DIR/channels/plow-chat" # channel server dir (registered as an MCP server)
 PLOW_BASE_URL="${PLOW_CHAT_BASE_URL:-https://api.plow.co}"
-SPAWN_CONFIRM="$REPO_ROOT/bin/spawn-confirm.expect" # drives the dev-channels confirmation for `start`
+SPAWN_CONFIRM="$SCRIPT_DIR/bin/spawn-confirm.expect" # drives the dev-channels confirmation for `start`
 
 # --- fakechat (marketplace) config, carried from run.sh ---
 MARKETPLACE_SRC="anthropics/claude-plugins-official"
