@@ -47,8 +47,17 @@ cd seed-domo
 
 Then **point an agent (Claude Code) at [`SEED.md`](SEED.md)** and let it drive the
 whole thing in real time. It does the work inline and ends with a **live Domo** —
-not a list of commands and settings left for you. Working from the SEED, the agent
-will:
+not a list of commands and settings left for you.
+
+> **"Installing Domo" means running it, not just checking out the repo.** A bare
+> SEED conformance pass (e.g. `/seed-install`: clone, check tools, run the
+> structural checks) is only the scaffolding — on its own it leaves Domo unbuilt
+> and not running. The real install is the **onboarding**: the interview, writing
+> your Domo, login, activation, and start. SEED.md wires the conformance pass to
+> roll **straight into** the onboarding, so you end up running — not staring at a
+> "now go do these steps" list. Done = Domo signed in and answering texts.
+
+Working from the SEED, the agent will:
 
 1. **Interview you up front** — solo or a household group, who the members are,
    what persona it should have, what it's allowed to do. All the questions in one

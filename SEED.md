@@ -118,6 +118,19 @@ claude.ai Google Calendar connector in the browser, and texting the Plow
 verification code(s) from the relevant phone(s). Setup, activation orchestration,
 and starting the daemon are run **by the agent**, not handed to the user.
 
+**This Action *is* installing Domo, and it is the root SEED's post-install hook.**
+A generic SEED conformance pass (clone, `## Dependencies`, the install-time
+`## Verify` prompts) is the scaffolding, not the finish line — on its own it
+leaves Domo unbuilt and not running. So as soon as a fresh conformance install
+reaches `terminal` with the install-time `## Verify` prompts green, the installer
+SHOULD offer to run this Action immediately and **continue straight into it**
+(surfacing the user-only steps inline) rather than stopping with a printed command
+for the user to run later. "Installed" is not the goal; **"running" is**: done is
+defined by the runtime `## Verify` prompts (signed in, daemon answering texts). The
+agent SHOULD drive to that state in one continuous flow, pausing only for the
+user-only steps, so the experience ends with a live Domo or one confirmation away
+from it — never a conformance install with no actual Domo.
+
 The agent MUST complete the following checklist (an agent SHOULD map each item to
 its task tracker):
 
