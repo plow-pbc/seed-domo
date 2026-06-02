@@ -39,8 +39,10 @@ account session); the agent surfaces them, waits, and then verifies them.
   backfill) is owned by the external SEED at
   `https://github.com/plow-pbc/seed-plow-chat`. It MUST be installed
   **leaves-first** (the external SEED before this one), because it owns the
-  channel/auth/WSS/post contract that the Domo channel object speaks. The clone
-  URL MUST carry no userinfo, query, or fragment.
+  channel/auth/WSS/post contract that the Domo channel object speaks. The SEED
+  does not prescribe where to clone it: the agent chooses the location (a sibling
+  checkout alongside `seed-domo` is conventional) and SHOULD refer to it as
+  `$SEED_PLOW_CHAT_ROOT`. The clone URL MUST carry no userinfo, query, or fragment.
 
 **Software**
 
@@ -100,42 +102,61 @@ These are the verbs of a Domo's lifecycle. Contracts use RFC 2119 language.
 
 ### Domo is installed
 
-The one-shot, interview-driven onboarding. **The SEED does not ship a
-configurable product and the agent MUST NOT dictate a shape.** Instead the agent
-**interviews the user** (solo / group / whoever / however), then **writes custom
-Domo software** tailored to that answer, consulting `ref/` for the mechanics.
-`ref/` is **reference only**: it is a working example of how the pieces fit, and
-the agent MUST NOT be required to copy it verbatim — it MAY author the Domo any
-way the user wants, as long as the security invariants below hold.
+The one-shot, interview-driven onboarding — run end-to-end by the installing
+agent, in real time, so it ends with a **live, ready-to-go Domo** rather than a
+pile of settings and commands for the user to run afterward. **The SEED does not
+ship a configurable product and the agent MUST NOT dictate a shape.** The agent
+**interviews the user up front**, then **writes custom Domo software** tailored to
+the answers and **runs the mechanics itself inline**, consulting `ref/` for how
+the pieces work. `ref/` is **reference only**: a working example the agent MAY
+reuse, adapt, or replace, as long as the security invariants below hold.
+
+The division of labor is fixed: the agent runs everything it can and pauses only
+for the genuinely **user-only (tier-3)** steps, resuming automatically once they
+are done. The user-only steps are exactly: interactive `/login`, enabling the
+claude.ai Google Calendar connector in the browser, and texting the Plow
+verification code(s) from the relevant phone(s). Setup, activation orchestration,
+and starting the daemon are run **by the agent**, not handed to the user.
 
 The agent MUST complete the following checklist (an agent SHOULD map each item to
 its task tracker):
 
-1. **Walk the Dependencies.** Surface every API and software dependency above.
-   For the two user-only (tier-3) steps — interactive `/login` and enabling the
-   claude.ai Google Calendar connector — the agent MUST surface them to the user,
-   wait, and verify them; it MUST NOT attempt to perform them itself.
-2. **Confirm the external SEED is installed leaves-first.** Verify that
-   [seed-plow-chat](https://github.com/plow-pbc/seed-plow-chat) (the channel/auth
-   contract) is present before standing up the channel.
-3. **Interview the user.** Ask how they want to use Domo. Named choices (e.g.
-   solo vs group) are tier-2 questions; open answers (member names, persona,
-   trust posture) are tier-3. The agent MUST record the answers as the household
-   context, and MUST NOT assume a shape the user did not choose.
-4. **Author the user's custom Domo software.** Write the Domo to match the
+1. **Interview the user up front.** In a single pass, ask everything needed to
+   author and stand up their Domo: how they want to use it (solo vs group —
+   tier-2; member names, persona, trust posture — tier-3), and confirm they can
+   complete the user-only steps. Front-loading the questions means the rest of the
+   install runs without further interruption. The agent MUST record the answers as
+   the household context and MUST NOT assume a shape the user did not choose.
+2. **Satisfy the Dependencies inline.** Install/confirm the software deps and
+   install the [seed-plow-chat](https://github.com/plow-pbc/seed-plow-chat)
+   external SEED leaves-first. For the two user-only steps, prompt and then
+   **verify in real time**:
+   - **Google Calendar connector** — direct the user to enable Google Calendar at
+     claude.ai for the account they will `/login` with, then **confirm access by
+     checking that the `mcp__claude_ai_Google_Calendar__*` tools actually appear**
+     (e.g. list calendars). The agent MUST confirm calendar access, not assume it.
+   - **Interactive `/login`** — have the user sign in to the subscription in a real
+     TTY; the agent MUST NOT supply an API key and MUST confirm `ANTHROPIC_API_KEY`
+     is unset.
+3. **Author the user's custom Domo software.** Write the Domo to match the
    interview, consulting `ref/` for the channel contract, the backgrounded
    `claude --channels` daemon with session resume, the dev-channels confirmation,
    and `--permission-mode auto`. The authored software MUST keep
-   `ANTHROPIC_API_KEY` unset, MUST store the Plow Bearer token chmod-600 and
-   never log/print/commit it, and MUST use clone URLs with no
-   userinfo/query/fragment.
-5. **Activate.** Run the activation handshake (see *Domo is activated*),
-   surfacing the activation/verification code(s) for the user(s) to text. The
-   activation secret MUST be passed via stdin, never argv.
-6. **Start the daemon.** Launch the persistent session in the background with the
-   pinned session UUID and the headless dev-channels confirmation.
-7. **Verify.** Run the Verify prompts below and confirm each returns its expected
-   answer before declaring the install complete.
+   `ANTHROPIC_API_KEY` unset, MUST store the Plow Bearer token chmod-600 and never
+   log/print/commit it, and MUST use clone URLs with no userinfo/query/fragment.
+4. **Run setup and activation inline.** The agent itself runs the bootstrap and
+   the Plow activation handshake **as part of the install** — obtaining the Plow
+   Bearer token is an install step, not a command left for the user to run later.
+   The agent surfaces the verification code(s) for the user(s) to text and waits
+   for the chat to go active. The activation secret MUST be passed via stdin, never
+   argv; the token MUST be written chmod-600.
+5. **Start the daemon inline.** The agent launches the persistent background
+   session (pinned session UUID, headless dev-channels confirmation) so Domo is
+   live by the end of the install.
+6. **Verify.** Run the Verify prompts below — both the install-time and the runtime
+   prompts (the runtime prompts now pass, because the agent ran activation and
+   start inline) — and confirm each returns its expected answer before declaring
+   the install complete.
 
 ### Domo is activated
 
@@ -172,25 +193,42 @@ the Bearer token or any other secret.
 ## Verify
 
 Verification is a sequence of natural-language prompts an agent reads and answers;
-the Domo is conformant when every prompt returns its expected answer. The
-deterministic implementation lives at `ref/verify.sh`.
+the Domo is conformant when every prompt returns its expected answer. The prompts
+are split by *when* they can pass. **Install-time** prompts hold once
+`## Dependencies` are satisfied; **runtime** prompts hold only after the
+interview-driven *Domo is installed* Action has stood up a live session. A
+mechanical Dependencies-then-Verify sweep on a fresh clone can satisfy the
+install-time prompts but MUST NOT be expected to satisfy the runtime prompts —
+those pass only after a full install. The deterministic implementation of the
+structural check lives at `ref/verify.sh`.
+
+**Install-time** — an agent can confirm these on a fresh clone once
+`## Dependencies` are satisfied, independent of the human `/login` and before a
+live Domo is running:
 
 1. **Tooling present.** Are `bun`, `jq`, and `expect` on `PATH`, and is
    `claude --version` ≥ 2.1.80?
-2. **Subscription, not API key.** Is the instance authenticated on a Claude
-   subscription (interactive `/login`), with `ANTHROPIC_API_KEY` **unset**?
+2. **No API key.** Is `ANTHROPIC_API_KEY` **unset**, so subscription auth is used
+   and billing never falls back to a metered key? This invariant is
+   deterministically checkable and MUST hold independent of the human `/login`.
 3. **Calendar connector.** Are the `mcp__claude_ai_Google_Calendar__*` tools
    available from the account-level connector?
-4. **Channel + daemon.** Is the channel MCP server registered, and does the
-   daemon resume the pinned session (e.g. `ref/domo doctor` / `ref/domo status`
-   reports green)?
-5. **Structural conformance.** Do the three SEED structural checks pass?
+4. **Structural conformance.** Do the three SEED structural checks pass?
    a. The repo `README.md` contains a `## Purpose` H2 (outside code blocks).
    b. The root `SEED.md` has exactly one H1 (`# Purpose`), matches the canonical
       H2 grammar, and includes the `## Normative Language` section.
    c. Every `SEED.md` in the tree has a `# Purpose` body that is a single line
       linking to its sibling-or-ancestor `README#Purpose`, and sub-folder
       `SEED.md` files omit `## Normative Language`.
+
+**Runtime** — these hold only after the *Domo is installed* Action has run
+(interview, authoring, `/login`, activation, and `start`):
+
+5. **Subscription sign-in.** Is the instance authenticated on a Claude
+   subscription via interactive `/login` (the tier-3, user-only step)?
+6. **Channel + daemon.** Is the channel MCP server registered, and does the
+   daemon resume the pinned session (e.g. `ref/domo doctor` / `ref/domo status`
+   reports green)?
 
 ## Feedback
 

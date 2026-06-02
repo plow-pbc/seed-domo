@@ -45,25 +45,31 @@ git clone https://github.com/plow-pbc/seed-domo
 cd seed-domo
 ```
 
-Then **point an agent (Claude Code) at [`SEED.md`](SEED.md)** and let it drive.
-Working from the SEED, the agent will:
+Then **point an agent (Claude Code) at [`SEED.md`](SEED.md)** and let it drive the
+whole thing in real time. It does the work inline and ends with a **live Domo** —
+not a list of commands and settings left for you. Working from the SEED, the agent
+will:
 
-1. **Walk every requirement** with you — the tooling (macOS, Claude Code with the
+1. **Interview you up front** — solo or a household group, who the members are,
+   what persona it should have, what it's allowed to do. All the questions in one
+   pass, so the rest runs without interruptions.
+2. **Walk every requirement with you** — the tooling (macOS, Claude Code with the
    `channels` research preview, `bun`, `jq`, `expect`), an interactive **`/login`**
-   to your Claude **subscription** (no API key), the claude.ai **Google Calendar
-   connector** enabled at the account level, and the **seed-plow-chat** channel
-   that bridges a real texting conversation to the session.
-2. **Interview you** about how you want to use Domo — solo or a household group,
-   who the members are, what persona it should have, and what it's allowed to do.
+   to your Claude **subscription** (no API key), and the claude.ai **Google
+   Calendar connector** — which it then *verifies* by checking that the calendar
+   tools actually show up — plus the **seed-plow-chat** channel that bridges a real
+   texting conversation to the session.
 3. **Write your custom Domo software** to match, consulting `ref/` for the proven
    mechanics but assembling exactly what you asked for.
-4. **Activate and start it** — surface the activation code(s) for you to text in,
-   launch the background session, and verify everything is live.
+4. **Set it up, activate, and start it — itself, inline.** The agent runs the
+   bootstrap, runs the Plow activation (surfacing the code(s) for you to text in),
+   and launches the background session, then verifies everything is live. Getting
+   the Plow token is part of the install, not a command you run later.
 
-A few steps only *you* can do (the agent will pause and ask): the interactive
-`/login`, and enabling the Google Calendar connector in the browser — an agent
-can't OAuth on your behalf. The SEED makes those explicit; it never tries to do
-them for you.
+A few steps only *you* can do (the agent pauses and asks, then resumes): the
+interactive `/login`, enabling the Google Calendar connector in the browser, and
+texting the verification code(s) from your phone. The SEED makes those explicit;
+it never tries to do them for you.
 
 ## Usage
 
