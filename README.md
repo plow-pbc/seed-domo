@@ -37,17 +37,26 @@ sitting between you and your agent.
 
 ## Install
 
-Installing Domo is a one-shot, agent-led conversation. There is no `./install`
-to run blindly.
+Installing Domo is a one-shot, agent-led conversation — not a `./install` you run
+blindly. The standard entry point is the SEED convention's bootstrap, which
+installs the `seed-create` / `seed-install` / `seed-verify` skills and then
+launches an agent pre-seeded to install this SEED:
 
 ```bash
-git clone https://github.com/plow-pbc/seed-domo
-cd seed-domo
+curl -fsSL https://raw.githubusercontent.com/plow-pbc/seed/main/install.sh \
+  | bash -s -- https://github.com/plow-pbc/seed-domo
 ```
 
-Then **point an agent (Claude Code) at [`SEED.md`](SEED.md)** and let it drive the
-whole thing in real time. It does the work inline and ends with a **live Domo** —
-not a list of commands and settings left for you.
+Already have the skills? Just point an agent (Claude Code) at the SEED directly —
+clone it and run `/seed-install https://github.com/plow-pbc/seed-domo`, or open
+the checkout and say *"install this SEED"*:
+
+```bash
+git clone https://github.com/plow-pbc/seed-domo && cd seed-domo
+```
+
+Either way, the agent drives the whole thing in real time. It does the work inline
+and ends with a **live Domo** — not a list of commands and settings left for you.
 
 > **"Installing Domo" means running it, not just checking out the repo.** A bare
 > SEED conformance pass (e.g. `/seed-install`: clone, check tools, run the
@@ -158,5 +167,5 @@ Domo act on others' behalf.
 
 ## License
 
-No license is declared for this repository yet. Until one is added, treat the
-contents as all-rights-reserved by the authors.
+[MIT](LICENSE) © 2026 plow-pbc. Use, modify, and redistribute freely with
+attribution.
