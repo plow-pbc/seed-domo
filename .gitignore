@@ -6,6 +6,9 @@
 # Dedicated, scoped agent workspace (`start` runs from here).
 /workspace/
 
+# Local design notes / specs — working history, not part of the published SEED.
+/docs/
+
 # Local subscription token / env, if the operator persists them in the checkout.
 /.env
 
@@ -23,8 +26,8 @@
 /.claude/run/domo.pid
 
 # Channel build artifacts (the bun server installs deps at launch).
-/channels/plow-chat/node_modules/
-/channels/plow-chat/bun.lock
+/ref/channels/plow-chat/node_modules/
+/ref/channels/plow-chat/bun.lock
 
 .DS_Store
 
