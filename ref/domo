@@ -9,7 +9,7 @@
 # or as a detached BACKGROUND daemon (`start`/`stop`/`status`/`logs`). shell and start
 # share ONE pinned session UUID so they are a single continuous conversation.
 #
-# Authoritative design: ../docs/PLAN.md and the build contract that produced this file.
+# Authoritative design: ../../SEED.md (this repo's SEED) and the build contract that produced it.
 #
 # Permission posture: `--permission-mode auto` (classifier-gated). No custom PreToolUse
 # allowlist (that was intentionally removed — do NOT reintroduce it). bypassPermissions

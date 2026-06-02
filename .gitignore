@@ -6,6 +6,9 @@
 # Dedicated, scoped agent workspace (`start` runs from here).
 /workspace/
 
+# Local design notes / specs — working history, not part of the published SEED.
+/docs/
+
 # Local subscription token / env, if the operator persists them in the checkout.
 /.env
 
