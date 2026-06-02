@@ -37,33 +37,57 @@ sitting between you and your agent.
 
 ## Install
 
-Installing Domo is a one-shot, agent-led conversation. There is no `./install`
-to run blindly.
+Installing Domo is a one-shot, agent-led conversation — not a `./install` you run
+blindly. The standard entry point is the SEED convention's bootstrap, which
+installs the `seed-create` / `seed-install` / `seed-verify` skills and then
+launches an agent pre-seeded to install this SEED:
 
 ```bash
-git clone https://github.com/plow-pbc/seed-domo
-cd seed-domo
+curl -fsSL https://raw.githubusercontent.com/plow-pbc/seed/main/install.sh \
+  | bash -s -- https://github.com/plow-pbc/seed-domo
 ```
 
-Then **point an agent (Claude Code) at [`SEED.md`](SEED.md)** and let it drive.
+Already have the skills? Just point an agent (Claude Code) at the SEED directly —
+clone it and run `/seed-install https://github.com/plow-pbc/seed-domo`, or open
+the checkout and say *"install this SEED"*:
+
+```bash
+git clone https://github.com/plow-pbc/seed-domo && cd seed-domo
+```
+
+Either way, the agent drives the whole thing in real time. It does the work inline
+and ends with a **live Domo** — not a list of commands and settings left for you.
+
+> **"Installing Domo" means running it, not just checking out the repo.** A bare
+> SEED conformance pass (e.g. `/seed-install`: clone, check tools, run the
+> structural checks) is only the scaffolding — on its own it leaves Domo unbuilt
+> and not running. The real install is the **onboarding**: the interview, writing
+> your Domo, login, activation, and start. SEED.md wires the conformance pass to
+> roll **straight into** the onboarding, so you end up running — not staring at a
+> "now go do these steps" list. Done = Domo signed in and answering texts.
+
 Working from the SEED, the agent will:
 
-1. **Walk every requirement** with you — the tooling (macOS, Claude Code with the
+1. **Interview you up front** — solo or a household group, who the members are,
+   what persona it should have, what it's allowed to do. All the questions in one
+   pass, so the rest runs without interruptions.
+2. **Walk every requirement with you** — the tooling (macOS, Claude Code with the
    `channels` research preview, `bun`, `jq`, `expect`), an interactive **`/login`**
-   to your Claude **subscription** (no API key), the claude.ai **Google Calendar
-   connector** enabled at the account level, and the **seed-plow-chat** channel
-   that bridges a real texting conversation to the session.
-2. **Interview you** about how you want to use Domo — solo or a household group,
-   who the members are, what persona it should have, and what it's allowed to do.
+   to your Claude **subscription** (no API key), and the claude.ai **Google
+   Calendar connector** — which it then *verifies* by checking that the calendar
+   tools actually show up — plus the **seed-plow-chat** channel that bridges a real
+   texting conversation to the session.
 3. **Write your custom Domo software** to match, consulting `ref/` for the proven
    mechanics but assembling exactly what you asked for.
-4. **Activate and start it** — surface the activation code(s) for you to text in,
-   launch the background session, and verify everything is live.
+4. **Set it up, activate, and start it — itself, inline.** The agent runs the
+   bootstrap, runs the Plow activation (surfacing the code(s) for you to text in),
+   and launches the background session, then verifies everything is live. Getting
+   the Plow token is part of the install, not a command you run later.
 
-A few steps only *you* can do (the agent will pause and ask): the interactive
-`/login`, and enabling the Google Calendar connector in the browser — an agent
-can't OAuth on your behalf. The SEED makes those explicit; it never tries to do
-them for you.
+A few steps only *you* can do (the agent pauses and asks, then resumes): the
+interactive `/login`, enabling the Google Calendar connector in the browser, and
+texting the verification code(s) from your phone. The SEED makes those explicit;
+it never tries to do them for you.
 
 ## Usage
 
@@ -143,5 +167,5 @@ Domo act on others' behalf.
 
 ## License
 
-No license is declared for this repository yet. Until one is added, treat the
-contents as all-rights-reserved by the authors.
+[MIT](LICENSE) © 2026 plow-pbc. Use, modify, and redistribute freely with
+attribution.

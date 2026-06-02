@@ -25,6 +25,10 @@
 /.claude/run/domo.log
 /.claude/run/domo.pid
 
+# SEED install report — seed-install writes this at the repo root on each run;
+# the seed-install contract recommends authors gitignore it so reruns don't churn.
+/install-report.json
+
 # Channel build artifacts (the bun server installs deps at launch).
 /ref/channels/plow-chat/node_modules/
 /ref/channels/plow-chat/bun.lock
