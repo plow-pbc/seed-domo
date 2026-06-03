@@ -397,26 +397,6 @@ cmd_setup() {
     *) die "unknown DOMO_CHANNEL='$DOMO_CHANNEL'." ;;
   esac
 
-  cat >&2 <<EOF
-
-[domo] ============================================================
-[domo] REMAINING ONE-TIME INTERACTIVE STEPS
-[domo] ============================================================
-[domo]
-[domo] A) Connect Google Calendar ONCE at the ACCOUNT level (browser):
-[domo]      https://claude.ai/customize/connectors -> Google Calendar -> Connect
-[domo]    Use the SAME Anthropic account you'll /login below.
-[domo]
-[domo] B) Log this instance in (and accept the one-time channels-preview consent):
-[domo]      ./domo shell        # interactive claude under CLAUDE_CONFIG_DIR=$CONFIG_DIR
-[domo]      /login              # SAME account that holds the Calendar connector; then exit
-[domo]
-[domo] C) (plow-chat only) Activate the Plow line + chat:
-[domo]      ./domo activate     # prints a code to text; writes the chmod-600 state file
-[domo]
-[domo] Then:  ./domo doctor    and    ./domo start   (background daemon)
-[domo] ============================================================
-EOF
   log "Setup complete (channel=$DOMO_CHANNEL)."
 }
 
@@ -1083,7 +1063,7 @@ Usage: $(basename "$0") <command> [args]
 
 Commands:
   setup            Idempotent bootstrap: isolated dirs + workspace + session UUID;
-                   ensure the selected channel is loadable. Prints one-time steps.
+                   ensure the selected channel is loadable.
   activate [--force]
                    (plow-chat) Plow handshake in curl: print the code to text, poll
                    redeem, write the chmod-600 state file. --force re-activates.
