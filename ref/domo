@@ -557,11 +557,12 @@ cmd_shell() {
 }
 
 # ---------------------------------------------------------------------------
-# login — sign in to the Claude subscription for THIS isolated config dir. Runs
-# `claude "/login"` directly, so it jumps STRAIGHT into the OAuth flow (Claude Code
-# treats a leading "/command" positional as a slash command to run at startup) —
-# no "now type /login" step. Authenticates the config dir only; starts no channel
-# or session. This is the real copy-paste command the installer hands over.
+# login — sign in to the Claude subscription for THIS isolated config dir. A fresh
+# config home makes Claude auto-run first-run onboarding on boot (theme picker, then
+# the login wall); we pass "/quit" as the initial slash command so Claude exits on
+# its own once the user finishes theme + browser login — no "now type /login" step,
+# no Ctrl+C. Authenticates the config dir only; starts no channel/session. This is
+# the real copy-paste command the installer hands over.
 # ---------------------------------------------------------------------------
 cmd_login() {
   export_config_dir
@@ -574,8 +575,11 @@ cmd_login() {
   [[ -d "$WORKSPACE" ]] || mkdir -p "$WORKSPACE"
   cd "$WORKSPACE"
   log "Signing in to your Claude subscription (CLAUDE_CONFIG_DIR=$CONFIG_DIR)."
-  log "Claude Code runs '/login' now — finish the OAuth in your browser, then exit (Ctrl+C)."
-  exec claude "/login"
+  log "Claude opens now: pick a theme + complete the browser login — then it exits on its own (no Ctrl+C)."
+  # A fresh config auto-runs onboarding (theme, then the login wall) on boot; the
+  # "/quit" initial command makes Claude exit once those finish — so the user isn't
+  # left in an interactive session. (Already-onboarded+authed → harmless boot+exit.)
+  exec claude "/quit"
 }
 
 # Compute a pkill -f pattern that uniquely identifies THIS instance's claude
