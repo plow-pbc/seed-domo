@@ -18,16 +18,37 @@ keep it small.
   object in memory. **No logic, no secrets.**
 - `app/` — the SPA (`index.html`, `app.js`, `style.css`). Renders whatever the state
   object holds. Hardcodes nothing about Domo.
-- `client.sh` — a tiny shell helper so any driver can push state / read answers
-  without reimplementing the HTTP calls.
+- `start.sh` — **one command** to bring the dashboard up: launches the server
+  detached, waits for it, opens the browser, and prints the drive recipe.
+- `client.sh` — shell helper. Low-level (`installer_push '<state>'`,
+  `installer_wait_answers`) **and** a one-liner **verb layer** that keeps cumulative
+  state in a file so a driver updates one thing at a time (see *Driving it*).
 - `demo.sh` — a self-contained happy-path driver used to validate the installer
   end-to-end (drives all phases; Plow steps hit a configurable base URL).
 
 ## Running
 
 ```bash
+ref/installer/start.sh                      # launch + open browser (the easy path)
+# or, by hand:
 bun run ref/installer/server.ts            # prints + writes server-info JSON, then serves
 ```
+
+### Driving it (one-liners — no hand-built JSON)
+
+```bash
+ref/installer/client.sh installer_reset  "Setting up Domo"
+ref/installer/client.sh installer_step   <id> <status> [label] [where] [command|link]
+ref/installer/client.sh installer_verify <name> <status> [code] [number] [self]
+ref/installer/client.sh installer_done   "Domo is live — text +1555… to talk to it"
+```
+
+`installer_step` upserts a step by `id` (preserving order); `status` ∈
+`pending|waiting|active|ok|error`; `where` ∈ `terminal|browser|phone|other` and the
+5th arg becomes the step's copy-paste `command` (terminal) or `link` (browser). Each
+call mutates the cumulative state in `$INSTALLER_STATE_DIR/state.json` and re-pushes
+the whole object, so calls work across separate shells. The interview itself can
+stay in the agent's native question UI; the dashboard is the status surface.
 
 The server binds **127.0.0.1** on an **ephemeral port**, mints a random URL
 **token**, and writes connection info to

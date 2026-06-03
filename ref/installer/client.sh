@@ -135,6 +135,80 @@ installer_wait_answers() {
   done
 }
 
+# --- high-level verb layer (cumulative state; one-liners) ------------------
+# installer_push needs the WHOLE state each time, which is friction for a driver.
+# These verbs keep the current state object in a file and re-push the whole thing
+# after each mutation, so a driver updates ONE thing at a time. Each call is
+# self-contained (reads the file, mutates, pushes), so an agent can run them from
+# SEPARATE shells without sourcing:
+#   ref/installer/client.sh installer_reset "Setting up Domo"
+#   ref/installer/client.sh installer_step  login waiting "Sign in to Claude" terminal "domo login"
+#   ref/installer/client.sh installer_step  login ok      "Signed in"
+#   ref/installer/client.sh installer_verify Sarah pending VERIFY-AB12CD +15550000002
+#   ref/installer/client.sh installer_done  "Domo is live — text +1555… to talk to it"
+
+_STATE_FILE="${INSTALLER_STATE_DIR%/}/state.json"
+_state_read() { [ -f "$_STATE_FILE" ] && cat "$_STATE_FILE" || echo '{"steps":[],"done":false}'; }
+# _state_jq <filter> [jq-args…]: mutate the state file in place, then re-push it.
+_state_jq() {
+  _installer_need jq
+  local filter="$1"; shift
+  local out; out="$(_state_read | jq "$@" "$filter")" || { echo "client.sh: state mutation failed" >&2; return 1; }
+  mkdir -p "$(dirname "$_STATE_FILE")"
+  printf '%s' "$out" > "$_STATE_FILE"
+  installer_push "$out" >/dev/null
+}
+
+# installer_reset [title]: begin a fresh dashboard.
+installer_reset() {
+  _installer_need jq
+  mkdir -p "$(dirname "$_STATE_FILE")"
+  jq -n --arg t "${1:-}" '{steps:[],done:false} | (if $t!="" then .title=$t else . end)' > "$_STATE_FILE"
+  installer_push "$(_state_read)" >/dev/null
+}
+
+# installer_set <field> <value>: set a header field (title|kicker|subtitle|message).
+installer_set() {
+  [ "$#" -ge 2 ] || { echo "usage: installer_set <field> <value>" >&2; return 2; }
+  _state_jq '.[$f]=$v' --arg f "$1" --arg v "$2"
+}
+
+# installer_step <id> <status> [label] [where] [command-or-link]:
+#   upsert a step by id, preserving order. status: pending|waiting|active|ok|error.
+#   where: terminal|browser|phone|other. 5th arg = command (terminal) or link (browser).
+installer_step() {
+  [ "$#" -ge 2 ] || { echo "usage: installer_step <id> <status> [label] [where] [command|link]" >&2; return 2; }
+  _state_jq '
+    ( {id:$id, status:$status}
+      + (if $label!="" then {label:$label} else {} end)
+      + (if $where!="" then {action: ({instruction:$label, where:$where}
+           + (if $where=="browser" then (if $cc!="" then {link:$cc} else {} end)
+                                   else (if $cc!="" then {command:$cc} else {} end) end))} else {} end)
+    ) as $s
+    | .steps = (if any(.steps[]?; .id==$id)
+                then [.steps[] | if .id==$id then $s else . end]
+                else (.steps + [$s]) end)
+  ' --arg id "$1" --arg status "$2" --arg label "${3:-}" --arg where "${4:-}" --arg cc "${5:-}"
+}
+
+# installer_verify <name> <status> [code] [number] [self]: upsert a member row by name.
+installer_verify() {
+  [ "$#" -ge 2 ] || { echo "usage: installer_verify <name> <status> [code] [number] [self]" >&2; return 2; }
+  _state_jq '
+    ( {name:$name, status:$status}
+      + (if $code!=""   then {code:$code}     else {} end)
+      + (if $number!="" then {number:$number} else {} end)
+      + (if ($self=="true" or $self=="self") then {isSelf:true} else {} end)
+    ) as $m
+    | .verification = (if any((.verification//[])[]?; .name==$name)
+                       then [(.verification//[])[] | if .name==$name then $m else . end]
+                       else ((.verification // []) + [$m]) end)
+  ' --arg name "$1" --arg status "$2" --arg code "${3:-}" --arg number "${4:-}" --arg self "${5:-}"
+}
+
+# installer_done [message]: final success state.
+installer_done() { _state_jq '.done=true | (if $m!="" then .message=$m else . end)' --arg m "${1:-}"; }
+
 # If sourced, the functions above are now available. If executed directly,
 # treat argv[1] as a function name to run (e.g. `client.sh installer_url`).
 if [ "${BASH_SOURCE[0]:-}" = "${0:-}" ]; then

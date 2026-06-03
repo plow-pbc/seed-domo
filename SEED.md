@@ -162,12 +162,37 @@ convenience commands **`domo login`** and **`domo activate`** rather than a
 hand-assembled invocation); (b) for a **browser** action, a labeled link to the
 exact page; or (c) for a **phone** action, the exact one-time `VERIFY-XXXXXX`
 code **and** the number to text it to. The agent then waits and re-checks until
-the step verifies. The agent MAY launch the install dashboard
-(`ref/installer`, see `## Objects`) to present these gates, the interview, and
-the verification as a clean local web page driven over its state contract; with
-no browser available, or by user preference, the agent falls back to the same
-explicit actions as terminal Q&A. Whichever surface is used, the EXPLICIT-ACTION
-rule holds.
+the step verifies.
+
+**Drive the install through the dashboard (MUST, when a browser is available).**
+Rather than a wall of terminal chatter, the agent MUST bring up the install
+dashboard (`ref/installer`, see `## Objects`) as its **first act** and use it as
+the live status / what-to-do / verification surface for the whole install. It is
+one launch plus one-liner updates — **no hand-built JSON**:
+
+```
+ref/installer/start.sh                                    # launches it + opens the browser
+ref/installer/client.sh installer_reset  "Setting up Domo"
+ref/installer/client.sh installer_step   <id> <status> [label] [where] [command|link]
+ref/installer/client.sh installer_verify <name> <status> [code] [number] [self]
+ref/installer/client.sh installer_done   "Domo is live — text +1555… to talk to it"
+```
+
+At every gate below the agent pushes that step's state — a `waiting` step carrying
+its exact `command`/`link`, flipped to `ok` once the agent has verified it, plus
+the per-member panel for the texting step. For example the login gate is just:
+
+```
+ref/installer/client.sh installer_step login waiting "Sign in to Claude" terminal "domo login"
+#   …user runs `domo login`; agent confirms the instance is authenticated…
+ref/installer/client.sh installer_step login ok "Signed in"
+```
+
+The **interview itself** (solo vs group, member names, persona) MAY stay in the
+agent's **native question UI** — the dashboard is the status surface, not a
+required form. Only when **no browser is available** (or the user opts out) does
+the agent fall back to the same explicit actions as terminal Q&A. Whichever surface
+is used, the EXPLICIT-ACTION rule holds.
 
 The agent MUST complete the following checklist **in this order** (an agent
 SHOULD map each item to its task tracker). Items 1–5 are the fail-fast gates and
