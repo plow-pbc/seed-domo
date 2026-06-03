@@ -122,6 +122,20 @@ export_config_dir() {
   log "CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"
 }
 
+# _dash <verb> [args…] — push to the install dashboard IF one is running. Best
+# effort and NEVER fatal: if the installer client or a live server-info isn't
+# present it silently no-ops, so the mechanics work identically with or without
+# the dashboard. This is how the rich, user-actionable status (e.g. the Plow
+# verification panel) appears on the page automatically when the agent runs the
+# normal commands, instead of relying on the agent to remember to push it.
+_dash() {
+  local client="$SCRIPT_DIR/installer/client.sh"
+  [[ -f "$client" ]] || return 0
+  local sdir="${INSTALLER_STATE_DIR:-${DOMO_INSTALLER_STATE_DIR:-${TMPDIR:-/tmp}/installer-ui}}"
+  [[ -f "$sdir/server-info" ]] || return 0
+  bash "$client" "$@" >/dev/null 2>&1 || true
+}
+
 require_claude() {
   command -v claude >/dev/null 2>&1 || die "the 'claude' CLI is not on PATH. Install Claude Code first."
 }
@@ -481,6 +495,12 @@ cmd_activate() {
 [domo] ============================================================
 EOF
 
+  # Mirror the "text this code" instruction onto the install dashboard (if one is
+  # running) so the page shows what to DO — the code + number with a live spinner
+  # → ✓ — instead of a dead "activating…" status line.
+  _dash installer_step plow active "Activate Plow chat — text the code"
+  _dash installer_verify "You" pending "Plow Activate: $display_code" "$send_to" self
+
   # --- Step 2: poll POST /v1/auth/activate/redeem until verified (cap ~5min) ---
   local deadline=$(( $(date +%s) + 300 ))
   local status="pending" redeem token chat_uid
@@ -523,6 +543,10 @@ EOF
 
   # The activation_secret is spent; delete the transient file.
   rm -f "$PLOW_ACTIVATION_FILE"
+
+  # Flip the dashboard panel to ✓ (if a dashboard is running).
+  _dash installer_verify "You" verified
+  _dash installer_step plow ok "Plow chat active"
 
   log "Activation verified. State written to $PLOW_STATE_FILE (chmod 600). chat_uid=$chat_uid"
   log "Token stored (NOT printed). If a session is already running: './domo stop && ./domo start' to pick it up."

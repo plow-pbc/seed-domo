@@ -26,6 +26,7 @@ const APP_DIR = new URL("./app/", import.meta.url).pathname;
 // The current install state object, as pushed by the driver. `null` until the
 // driver pushes its first state.
 let state: unknown = null;
+let doneExitScheduled = false;
 
 // The submitted form. `submitted` flips to true once the page POSTs /answers.
 let answers: { submitted: boolean; values: unknown } = {
@@ -241,6 +242,18 @@ async function handleState(req: Request): Promise<Response> {
   }
   state = body;
   broadcastState();
+  // Ephemeral: once the install reaches `done`, the dashboard's job is over.
+  // Self-exit after a short grace period so the user can read the success screen
+  // and the page can finish rendering — then the server stops listening on its
+  // own instead of orphaning (start.sh detaches it, so nothing else reaps it).
+  // Overridable via INSTALLER_DONE_GRACE_MS (0 disables the auto-exit).
+  if (body && typeof body === "object" && (body as Record<string, unknown>).done === true) {
+    const grace = Number(process.env.INSTALLER_DONE_GRACE_MS ?? 90000);
+    if (grace > 0 && !doneExitScheduled) {
+      doneExitScheduled = true;
+      setTimeout(() => process.exit(0), grace);
+    }
+  }
   return json({ ok: true });
 }
 

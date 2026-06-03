@@ -165,8 +165,10 @@ code **and** the number to text it to. The agent then waits and re-checks until
 the step verifies.
 
 **Drive the install through the dashboard (MUST, when a browser is available).**
-Rather than a wall of terminal chatter, the agent MUST bring up the install
-dashboard (`ref/installer`, see `## Objects`) as its **first act** and use it as
+This is **not** optional and **not** a per-session judgment call: the agent MUST
+NOT "just drive it in the terminal because that fits this session." Rather than a
+wall of terminal chatter, the agent MUST bring up the install dashboard
+(`ref/installer`, see `## Objects`) as its **first act** and use it as
 the live status / what-to-do / verification surface for the whole install. It is
 one launch plus one-liner updates — **no hand-built JSON**:
 
@@ -188,11 +190,15 @@ ref/installer/client.sh installer_step login waiting "Sign in to Claude" termina
 ref/installer/client.sh installer_step login ok "Signed in"
 ```
 
-The **interview itself** (solo vs group, member names, persona) MAY stay in the
-agent's **native question UI** — the dashboard is the status surface, not a
-required form. Only when **no browser is available** (or the user opts out) does
-the agent fall back to the same explicit actions as terminal Q&A. Whichever surface
-is used, the EXPLICIT-ACTION rule holds.
+The **interview is exactly one question** — *solo, or a group? (and if a group,
+who / how many — e.g. just you, or you + a partner)* — and it MAY stay in the
+agent's **native question UI**; the dashboard is the status surface, not a required
+form. **Do NOT ask about persona, tone, or per-sender autonomy** — those are
+deferred (see `## Open`). The simplest install is: the gates run automatically,
+the user answers that one chat-shape question, and does exactly two things —
+**`/login`** and **texting the Plow verification code(s)**. Only when **no browser
+is available** (or the user opts out) does the agent fall back to the same explicit
+actions as terminal Q&A. Whichever surface is used, the EXPLICIT-ACTION rule holds.
 
 The agent MUST complete the following checklist **in this order** (an agent
 SHOULD map each item to its task tracker). Items 1–5 are the fail-fast gates and
@@ -225,17 +231,22 @@ the agent run items 6–8.
    chat shape (solo vs group — tier-2) and any member names (tier-3), record them
    as the household context (MUST NOT assume a shape the user did not choose),
    then **create/activate a Plow chat** with **`domo activate`** to validate the
-   token and line **now**. The agent surfaces each member's one-time
-   `VERIFY-XXXXXX` code plus the number to text and waits for the chat to go
-   active. The activation secret MUST be passed via stdin, never argv; the token
-   MUST be written chmod-600 and never logged/printed/committed. A bad token/line
-   fails here, before any authoring.
-6. **Author the user's custom Domo software.** With every gate green, write the
-   Domo to match the interview, consulting `ref/` for the channel contract, the
-   backgrounded `claude --channels` daemon with session resume, the dev-channels
-   confirmation, and `--permission-mode auto`. The authored software MUST keep
-   `ANTHROPIC_API_KEY` unset, MUST store the Plow Bearer token chmod-600 and never
-   log/print/commit it, and MUST use clone URLs with no userinfo/query/fragment.
+   token and line **now**. `domo activate` **pushes the verification panel to the
+   dashboard automatically** — each one-time `VERIFY-XXXXXX` code + the number to
+   text, with a live spinner that flips ✓ when the text lands — so the page tells
+   the user exactly what to do instead of a dead "activating…" line. The activation
+   secret MUST be passed via stdin, never argv; the token MUST be written chmod-600
+   and never logged/printed/committed. A bad token/line fails here, before any
+   authoring.
+6. **Wire Domo up for the chosen shape.** With every gate green, configure Domo
+   for solo vs group and record the roster (who is in the chat) in the workspace
+   `CLAUDE.md`, consulting `ref/` for the channel contract, the backgrounded
+   `claude --channels` daemon with session resume, the dev-channels confirmation,
+   and `--permission-mode auto`. Keep `ANTHROPIC_API_KEY` unset, store the Plow
+   Bearer token chmod-600 (never log/print/commit it), and use clone URLs with no
+   userinfo/query/fragment. **Persona, tone, and per-sender autonomy are deferred
+   (`## Open`) — do not author or interview for them now;** the simplest install
+   just stands up the chosen chat shape.
 7. **Start the daemon inline.** The agent launches the persistent background
    session (pinned session UUID, headless dev-channels confirmation) so Domo is
    live by the end of the install.
@@ -328,6 +339,9 @@ live Domo is running:
   Deferred.
 - **Per-sender gating** — finer-grained authorization per sender. Deferred; the
   current trust posture is all-verified-members-equal.
+- **Persona / tone / autonomy** — letting the user shape Domo's voice and how much
+  it may do on its own. Deferred until the core install is solid; the install MUST
+  NOT interview for these yet (the only install question is solo vs group).
 
 ## Non-Goals
 

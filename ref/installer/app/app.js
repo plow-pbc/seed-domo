@@ -550,22 +550,23 @@
     who.appendChild(nm);
 
     var instText;
-    if (m.isSelf) {
-      instText = "texted from your phone";
-    } else if (status === "verified") {
+    if (status === "verified") {
       instText = "verified";
     } else if (status === "error") {
-      instText = "couldn't verify — resend their code";
+      instText = "couldn't verify — resend the code";
+    } else if (m.isSelf) {
+      // Solo / the owner: YOU still have to text the code. Show how.
+      instText = m.number ? ("Text this from your phone to " + m.number) : "Text this from your phone";
     } else if (m.number) {
-      instText = "Send " + (m.name || "them") + " their code — they text it to " + m.number;
+      instText = "Send " + (m.name || "them") + " this code — they text it to " + m.number;
     } else {
-      instText = "Send " + (m.name || "them") + " their code to text in";
+      instText = "Send " + (m.name || "them") + " this code to text in";
     }
     who.appendChild(el("div", { class: "inst", text: instText }));
     row.appendChild(who);
 
-    // For non-self pending/error members, show the code chip + Copy + (number).
-    if (!m.isSelf && status !== "verified" && m.code) {
+    // Any pending/error member with a code shows the chip + Copy (incl. you).
+    if (status !== "verified" && m.code) {
       var codeWrap = el("div", { class: "code" });
       codeWrap.appendChild(el("span", { class: "chip", text: m.code }));
       var cp = el("button", { class: "cp", attrs: { type: "button" }, text: "⧉ Copy" });
