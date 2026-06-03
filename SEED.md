@@ -95,6 +95,21 @@ descriptive: it names the parts so Actions and Verify can refer to them.
 - **The calendar tools** — the `mcp__claude_ai_Google_Calendar__*` tools that
   appear from the account-level claude.ai connector. They let Domo read and
   manage the household calendar.
+- **The install dashboard** — a generic, agent- and SEED-agnostic onboarding
+  surface under `ref/installer` that the installing agent MAY launch to present
+  the install gates, the interview, and the verification as a clean local web
+  page instead of terminal chatter. It is a thin local web app (a `bun` server
+  plus a vanilla-JS single-page app) that the agent drives over a plain
+  HTTP/SSE/JSON **state contract**: the agent pushes the current steps, form, and
+  per-member verification status; the page renders them and returns the form
+  answers. It is **reference only** and **agent/SEED-neutral** — it hardcodes
+  nothing about Domo, Claude, Plow, or connectors (all of that lives in the
+  driving agent), binds `127.0.0.1` on an ephemeral port behind a random path
+  token, holds state in memory only, and MUST NOT receive or store any secret.
+  When no browser is available, or by user preference, the agent falls back to a
+  terminal Q&A running the same gates; the dashboard is a nicer skin over the
+  same install, not a precondition for it. Reference: `ref/installer` (contract
+  at `ref/installer/README.md`).
 
 ## Actions
 
@@ -131,42 +146,75 @@ agent SHOULD drive to that state in one continuous flow, pausing only for the
 user-only steps, so the experience ends with a live Domo or one confirmation away
 from it — never a conformance install with no actual Domo.
 
-The agent MUST complete the following checklist (an agent SHOULD map each item to
-its task tracker):
+**Fail-fast: the hard gates run FIRST, in order, before any authoring.** The
+preconditions that can sink an install — missing tooling, no scaffold, the
+absent Calendar connector, an unconfirmed login, an invalid Plow token/line —
+MUST be checked **up front**, each one passing before the next is attempted, so a
+bad precondition fails *here* and not after the agent has written custom software.
+Only after every gate is green does the agent author the user's Domo and start it.
 
-1. **Interview the user up front.** In a single pass, ask everything needed to
-   author and stand up their Domo: how they want to use it (solo vs group —
-   tier-2; member names, persona, trust posture — tier-3), and confirm they can
-   complete the user-only steps. Front-loading the questions means the rest of the
-   install runs without further interruption. The agent MUST record the answers as
-   the household context and MUST NOT assume a shape the user did not choose.
-2. **Satisfy the Dependencies inline.** Install/confirm the software deps and
+**EXPLICIT-ACTION (hard rule).** Every off-page step the agent asks the user to
+perform MUST show the user the **exact** thing to do — never vague prose like "go
+log in" or "enable the connector." Concretely, for an off-page step the agent
+MUST surface one of: (a) for a **terminal** action, the full copy-paste command
+(the install scaffolds the Domo shell early so it can hand the user the real
+convenience commands **`domo login`** and **`domo activate`** rather than a
+hand-assembled invocation); (b) for a **browser** action, a labeled link to the
+exact page; or (c) for a **phone** action, the exact one-time `VERIFY-XXXXXX`
+code **and** the number to text it to. The agent then waits and re-checks until
+the step verifies. The agent MAY launch the install dashboard
+(`ref/installer`, see `## Objects`) to present these gates, the interview, and
+the verification as a clean local web page driven over its state contract; with
+no browser available, or by user preference, the agent falls back to the same
+explicit actions as terminal Q&A. Whichever surface is used, the EXPLICIT-ACTION
+rule holds.
+
+The agent MUST complete the following checklist **in this order** (an agent
+SHOULD map each item to its task tracker). Items 1–5 are the fail-fast gates and
+MUST each pass before the next is attempted; only after all five are green does
+the agent run items 6–8.
+
+1. **Tooling.** Confirm the software Dependencies — `bun`, `jq`, `expect` on
+   `PATH` and `claude --version` ≥ 2.1.80. The agent auto-checks these and stops
+   on the first missing tool.
+2. **Scaffold the Domo shell.** Clone the project via the bootstrap and run
+   `domo setup` (dirs, isolated config, workspace, pinned session UUID), and
    install the [seed-plow-chat](https://github.com/plow-pbc/seed-plow-chat)
-   external SEED leaves-first. For the two user-only steps, prompt and then
-   **verify in real time**:
-   - **Google Calendar connector** — direct the user to enable Google Calendar at
-     claude.ai for the account they will `/login` with, then **confirm access by
-     checking that the `mcp__claude_ai_Google_Calendar__*` tools actually appear**
-     (e.g. list calendars). The agent MUST confirm calendar access, not assume it.
-   - **Interactive `/login`** — have the user sign in to the subscription in a real
-     TTY; the agent MUST NOT supply an API key and MUST confirm `ANTHROPIC_API_KEY`
-     is unset.
-3. **Author the user's custom Domo software.** Write the Domo to match the
-   interview, consulting `ref/` for the channel contract, the backgrounded
-   `claude --channels` daemon with session resume, the dev-channels confirmation,
-   and `--permission-mode auto`. The authored software MUST keep
+   external SEED leaves-first. This stands up the workspace and the convenience
+   commands **`domo login`** / **`domo activate`** *before* the user is asked to
+   do anything, so the later gates can hand over a real one-paste command instead
+   of vague prose. Clone URLs MUST carry no userinfo/query/fragment.
+3. **Calendar connector.** Check whether the `mcp__claude_ai_Google_Calendar__*`
+   tools are present (e.g. list calendars). If they are absent, direct the user —
+   with a labeled link to claude.ai — to enable the Google Calendar connector at
+   the **account** level for the account they will `/login` with, then **re-check
+   until the tools actually appear**. The agent MUST confirm calendar access, not
+   assume it. (User-only/tier-3: surfaced and verified, never executed by the
+   agent.)
+4. **Claude login.** Have the user sign in to the subscription in a real TTY —
+   surfacing the exact **`domo login`** command, which opens Claude in the
+   workspace ready for `/login` — then **confirm** the instance is authenticated
+   **and** that `ANTHROPIC_API_KEY` is unset (subscription auth, never a metered
+   key). (User-only/tier-3.)
+5. **Chat type + members → validate against Plow.** Interview the user for the
+   chat shape (solo vs group — tier-2) and any member names (tier-3), record them
+   as the household context (MUST NOT assume a shape the user did not choose),
+   then **create/activate a Plow chat** with **`domo activate`** to validate the
+   token and line **now**. The agent surfaces each member's one-time
+   `VERIFY-XXXXXX` code plus the number to text and waits for the chat to go
+   active. The activation secret MUST be passed via stdin, never argv; the token
+   MUST be written chmod-600 and never logged/printed/committed. A bad token/line
+   fails here, before any authoring.
+6. **Author the user's custom Domo software.** With every gate green, write the
+   Domo to match the interview, consulting `ref/` for the channel contract, the
+   backgrounded `claude --channels` daemon with session resume, the dev-channels
+   confirmation, and `--permission-mode auto`. The authored software MUST keep
    `ANTHROPIC_API_KEY` unset, MUST store the Plow Bearer token chmod-600 and never
    log/print/commit it, and MUST use clone URLs with no userinfo/query/fragment.
-4. **Run setup and activation inline.** The agent itself runs the bootstrap and
-   the Plow activation handshake **as part of the install** — obtaining the Plow
-   Bearer token is an install step, not a command left for the user to run later.
-   The agent surfaces the verification code(s) for the user(s) to text and waits
-   for the chat to go active. The activation secret MUST be passed via stdin, never
-   argv; the token MUST be written chmod-600.
-5. **Start the daemon inline.** The agent launches the persistent background
+7. **Start the daemon inline.** The agent launches the persistent background
    session (pinned session UUID, headless dev-channels confirmation) so Domo is
    live by the end of the install.
-6. **Verify.** Run the Verify prompts below — both the install-time and the runtime
+8. **Verify.** Run the Verify prompts below — both the install-time and the runtime
    prompts (the runtime prompts now pass, because the agent ran activation and
    start inline) — and confirm each returns its expected answer before declaring
    the install complete.

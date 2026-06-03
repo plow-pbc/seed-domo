@@ -89,6 +89,12 @@ interactive `/login`, enabling the Google Calendar connector in the browser, and
 texting the verification code(s) from your phone. The SEED makes those explicit;
 it never tries to do them for you.
 
+To keep that crisp, the agent can drive the whole install through a **clean local
+web page** ([`ref/installer/`](ref/installer/)) — a generic, agent-agnostic install
+dashboard that shows each step, the exact copy-paste command for anything you must
+run, and live ✓ status (including per-person phone verification). It falls back to
+plain terminal Q&A when there's no browser.
+
 ## Usage
 
 Once Domo is installed, the reference `ref/domo` CLI shows how the lifecycle is

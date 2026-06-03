@@ -529,10 +529,12 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# shell — FOREGROUND interactive session (one-time consent / /login / debugging).
-# Uses the SAME launch argv as start so they share ONE pinned session.
+# exec_interactive_session — the FOREGROUND interactive launch shared by `shell`
+# and `login`: isolate the config dir, resolve auth, cd into $WORKSPACE (so the
+# project-dir slug is right), build the pinned-session argv, and exec an
+# interactive TTY claude. Same argv as `start`, so all three share ONE session.
 # ---------------------------------------------------------------------------
-cmd_shell() {
+exec_interactive_session() {
   export_config_dir
   require_claude
   [[ "$DOMO_CHANNEL" == "plow-chat" ]] && require_bun
@@ -540,10 +542,29 @@ cmd_shell() {
   [[ -d "$WORKSPACE" ]] || mkdir -p "$WORKSPACE"
   cd "$WORKSPACE" # cd BEFORE building argv so the workspace project-dir slug is correct
   build_claude_argv
-  log "Opening FOREGROUND session in $WORKSPACE (CLAUDE_CONFIG_DIR=$CONFIG_DIR)."
-  log "One-time here: accept channels-preview consent + '/login'. Then exit."
   log "Launch: ${CLAUDE_ARGV[*]}"
   exec "${CLAUDE_ARGV[@]}"
+}
+
+# ---------------------------------------------------------------------------
+# shell — FOREGROUND interactive session (one-time consent / /login / debugging).
+# Uses the SAME launch argv as start so they share ONE pinned session.
+# ---------------------------------------------------------------------------
+cmd_shell() {
+  log "Opening FOREGROUND session in $WORKSPACE (CLAUDE_CONFIG_DIR=$CONFIG_DIR)."
+  log "One-time here: accept channels-preview consent + '/login'. Then exit."
+  exec_interactive_session
+}
+
+# ---------------------------------------------------------------------------
+# login — open the interactive session so the user can `/login` (sign in with
+# their Claude subscription). Same launch as `shell`; the only difference is the
+# up-front hint telling the user exactly what to type. Used by the installer so
+# it can hand over a real copy-paste command instead of vague prose.
+# ---------------------------------------------------------------------------
+cmd_login() {
+  log "Opening the session in $WORKSPACE — type '/login' to sign in with your Claude subscription, then return to the installer."
+  exec_interactive_session
 }
 
 # Compute a pkill -f pattern that uniquely identifies THIS instance's claude
@@ -999,6 +1020,7 @@ Commands:
                    (plow-chat) Plow handshake in curl: print the code to text, poll
                    redeem, write the chmod-600 state file. --force re-activates.
   shell            FOREGROUND interactive session (one-time consent / /login / debug).
+  login            Open the session so you can /login (sign in). Same as shell, with a hint.
   start            BACKGROUND detached daemon (PID file + logfile). Same pinned session.
   stop             Kill the daemon + sweep stray channel child.
   status [--assert] Resolved config + daemon liveness + channel state (no secrets).
@@ -1024,6 +1046,7 @@ main() {
     setup)    shift; cmd_setup "$@" ;;
     activate) shift; cmd_activate "$@" ;;
     shell)    shift; cmd_shell "$@" ;;
+    login)    shift; cmd_login "$@" ;;
     start)    shift; cmd_start "$@" ;;
     stop)     shift; cmd_stop "$@" ;;
     status)   shift; cmd_status "$@" ;;
