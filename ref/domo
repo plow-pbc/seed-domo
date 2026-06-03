@@ -557,14 +557,25 @@ cmd_shell() {
 }
 
 # ---------------------------------------------------------------------------
-# login — open the interactive session so the user can `/login` (sign in with
-# their Claude subscription). Same launch as `shell`; the only difference is the
-# up-front hint telling the user exactly what to type. Used by the installer so
-# it can hand over a real copy-paste command instead of vague prose.
+# login — sign in to the Claude subscription for THIS isolated config dir. Runs
+# `claude "/login"` directly, so it jumps STRAIGHT into the OAuth flow (Claude Code
+# treats a leading "/command" positional as a slash command to run at startup) —
+# no "now type /login" step. Authenticates the config dir only; starts no channel
+# or session. This is the real copy-paste command the installer hands over.
 # ---------------------------------------------------------------------------
 cmd_login() {
-  log "Opening the session in $WORKSPACE — type '/login' to sign in with your Claude subscription, then return to the installer."
-  exec_interactive_session
+  export_config_dir
+  require_claude
+  # Subscription auth only — never let a metered key shadow the interactive login.
+  if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    warn "ANTHROPIC_API_KEY is set; unsetting it so /login uses subscription auth."
+    unset ANTHROPIC_API_KEY
+  fi
+  [[ -d "$WORKSPACE" ]] || mkdir -p "$WORKSPACE"
+  cd "$WORKSPACE"
+  log "Signing in to your Claude subscription (CLAUDE_CONFIG_DIR=$CONFIG_DIR)."
+  log "Claude Code runs '/login' now — finish the OAuth in your browser, then exit (Ctrl+C)."
+  exec claude "/login"
 }
 
 # Compute a pkill -f pattern that uniquely identifies THIS instance's claude

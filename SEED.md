@@ -192,8 +192,8 @@ the agent run items 6–8.
    assume it. (User-only/tier-3: surfaced and verified, never executed by the
    agent.)
 4. **Claude login.** Have the user sign in to the subscription in a real TTY —
-   surfacing the exact **`domo login`** command, which opens Claude in the
-   workspace ready for `/login` — then **confirm** the instance is authenticated
+   surfacing the exact **`domo login`** command, which runs `claude "/login"`
+   directly (straight into the browser OAuth) — then **confirm** the instance is authenticated
    **and** that `ANTHROPIC_API_KEY` is unset (subscription auth, never a metered
    key). (User-only/tier-3.)
 5. **Chat type + members → validate against Plow.** Interview the user for the
