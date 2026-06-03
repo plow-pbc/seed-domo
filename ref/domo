@@ -687,13 +687,37 @@ cmd_start() {
 
   # Brief liveness check so an immediate crash is reported now, not silently.
   sleep 1
-  if kill -0 "$pid" 2>/dev/null; then
-    log "Daemon started (pid $pid)."
-    log "Transcript feed: ./domo logs    Stop with: ./domo stop"
-  else
+  if ! kill -0 "$pid" 2>/dev/null; then
     rm -f "$PID_FILE" "$SIG_FILE"
     die "daemon exited immediately — see $LOG_FILE (last lines below):
 $(tail -n 20 "$LOG_FILE" 2>/dev/null | strip_ansi || true)"
+  fi
+  log "Daemon process up (pid $pid)."
+
+  # Readiness probe. A live pid is NOT proof Domo works: on a fresh/un-onboarded
+  # config, claude parks in first-run onboarding (theme picker, then the /login
+  # wall) and the channel never spawns — the pid stays alive, but no session
+  # transcript is written and no channel connects. Wait for a real readiness
+  # signal (the pinned-session jsonl appears, or the channel logs that it's
+  # listening) before declaring success.
+  local sid jsonl ready=0 i
+  sid="$(read_session_id)"
+  jsonl="$PROJECTS_DIR/$sid.jsonl"
+  for i in $(seq 1 15); do
+    if { [[ -n "$sid" ]] && [[ -f "$jsonl" ]]; } || grep -qiE 'Listening for channel|channel messages from' "$LOG_FILE" 2>/dev/null; then
+      ready=1; break
+    fi
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  if [[ "$ready" -eq 1 ]]; then
+    log "Daemon ready — channel listening. Transcript feed: ./domo logs    Stop with: ./domo stop"
+  else
+    warn "Daemon pid is alive but NOT ready after ~15s: no session transcript and no channel yet."
+    warn "Most likely '$CONFIG_DIR' hasn't completed first-run onboarding/login, so claude is parked"
+    warn "at the theme picker or the /login wall. Run './domo stop', then './domo login' and complete"
+    warn "the theme picker + '/login' in a real terminal, then './domo start' again."
+    warn "('./domo logs --raw' shows where it's parked.)"
   fi
 }
 
@@ -959,13 +983,18 @@ cmd_doctor() {
   if command -v claude >/dev/null 2>&1; then log "OK   'claude' on PATH"; else warn "MISS 'claude' not on PATH"; ok=1; fi
   if command -v bun >/dev/null 2>&1; then log "OK   'bun' on PATH"; else warn "MISS 'bun' not on PATH (needed for plow-chat)"; [[ "$DOMO_CHANNEL" == "plow-chat" ]] && ok=1; fi
 
-  # Auth: token OR stored login both work.
+  # Auth: a headless token OR a real subscription login. File EXISTENCE is NOT
+  # proof — on macOS the subscription OAuth lives in the Keychain (keyed per
+  # config dir), and a `.credentials.json` may hold only MCP-server OAuth with no
+  # `claudeAiOauth` block. So require the token, or the actual login block.
   if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] || [[ -f "$ENV_FILE" ]] || [[ -f "$TOKEN_FILE" ]]; then
     log "OK   auth: token available (env or token file)"
-  elif [[ -f "$CONFIG_DIR/.credentials.json" ]]; then
-    log "OK   auth: interactive login present in $CONFIG_DIR"
+  elif [[ -f "$CONFIG_DIR/.credentials.json" ]] && grep -q 'claudeAiOauth' "$CONFIG_DIR/.credentials.json" 2>/dev/null; then
+    log "OK   auth: subscription login present in $CONFIG_DIR/.credentials.json"
   else
-    log "INFO auth: no token/login detected — run './domo shell' then '/login' (creds may be in Keychain)."
+    log "INFO auth: not verifiable from token/file. On macOS the subscription login lives in the"
+    log "     Keychain (a copied .credentials.json does NOT carry it). If '$CONFIG_DIR' has never"
+    log "     completed '/login', run './domo login' in a real terminal first — 'start' verifies at runtime."
   fi
 
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then

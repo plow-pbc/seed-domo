@@ -276,8 +276,9 @@ async function backfill(state: PlowState): Promise<void> {
   }
   let body: any
   try { body = await res.json() } catch { return }
-  // The endpoint may return an array or { messages: [...] }; handle both.
-  const messages: any[] = Array.isArray(body) ? body : (body?.messages ?? [])
+  // The endpoint returns the Plow list envelope { object:"list", data:[...] };
+  // also tolerate a bare array or a { messages:[...] } shape.
+  const messages: any[] = Array.isArray(body) ? body : (body?.data ?? body?.messages ?? [])
 
   // First-ever backfill (no prior on-disk marker): seed the baseline WITHOUT
   // delivering, so a long-lived chat's history is not replayed to Claude as if
