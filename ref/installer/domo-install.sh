@@ -401,7 +401,6 @@ calendar_tool_result_confirmed() {
     try { data = fs.readFileSync(file, "utf8").slice(offset); } catch { process.exit(1); }
     const calendarTool = "mcp__claude_ai_Google_Calendar__list_calendars";
     const toolIds = new Set();
-    let sawCalendarTool = false;
     let confirmed = false;
     function flatten(value) {
       if (value == null) return "";
@@ -421,11 +420,10 @@ calendar_tool_result_confirmed() {
       if (!Array.isArray(content)) continue;
       for (const item of content) {
         if (item?.type === "tool_use" && item?.name === calendarTool) {
-          sawCalendarTool = true;
           if (item.id) toolIds.add(item.id);
         }
         if (item?.type === "tool_result" && item?.is_error !== true) {
-          const linked = item.tool_use_id ? toolIds.has(item.tool_use_id) : sawCalendarTool;
+          const linked = typeof item.tool_use_id === "string" && toolIds.has(item.tool_use_id);
           const text = flatten(item.content).trim();
           if (linked && text.length > 2 && !/(permission denied|not found|failed|error|missing)/i.test(text)) {
             confirmed = true;
