@@ -439,6 +439,13 @@ plow_http_json() {
   local url="${PLOW_BASE_URL%/}$path" out err config code rc
   out="$(mktemp "${TMPDIR:-/tmp}/domo-plow-body.XXXXXX")"
   err="$(mktemp "${TMPDIR:-/tmp}/domo-plow-err.XXXXXX")"
+  plow_http_cleanup() {
+    rm -f "$out" "$err" "${config:-}"
+  }
+  trap 'plow_http_cleanup' EXIT
+  trap 'plow_http_cleanup; exit 130' INT
+  trap 'plow_http_cleanup; exit 143' TERM
+  trap 'plow_http_cleanup; exit 129' HUP
   local args=(-sS -o "$out" -w "%{http_code}" -X "$method" "$url" -H 'Content-Type: application/json')
   if [[ -n "$token" ]]; then
     config="$(umask 077; mktemp "${TMPDIR:-/tmp}/domo-plow-curl.XXXXXX")"
@@ -464,22 +471,23 @@ plow_http_json() {
   fi
   if [[ "$rc" -ne 0 ]]; then
     local msg; msg="$(tr '\n' ' ' < "$err" | sed 's/[[:space:]]\+/ /g')"
-    rm -f "$out" "$err" "${config:-}"
+    plow_http_cleanup
     die "Plow API $method $path failed: ${msg:-curl exit $rc}"
   fi
   if [[ ! "$code" =~ ^[0-9][0-9][0-9]$ || "$code" -lt 200 || "$code" -ge 300 ]]; then
     local response; response="$(tr '\n' ' ' < "$out" | sed 's/[[:space:]]\+/ /g')"
-    rm -f "$out" "$err" "${config:-}"
+    plow_http_cleanup
     die "Plow API $method $path returned HTTP ${code:-000}: ${response:-<empty response>}"
   fi
   if ! bun -e 'JSON.parse(require("fs").readFileSync(process.argv.slice(1)[0], "utf8"))' "$out" 2>"$err"; then
     local parse_err; parse_err="$(tr '\n' ' ' < "$err" | sed 's/[[:space:]]\+/ /g')"
     local response; response="$(tr '\n' ' ' < "$out" | sed 's/[[:space:]]\+/ /g')"
-    rm -f "$out" "$err" "${config:-}"
+    plow_http_cleanup
     die "Plow API $method $path returned invalid JSON: ${parse_err:-parse failed}; body=${response:-<empty>}"
   fi
   cat "$out"
-  rm -f "$out" "$err" "${config:-}"
+  plow_http_cleanup
+  trap - EXIT INT TERM HUP
 }
 
 plow_auth_activate() {
