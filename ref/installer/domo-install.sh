@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # domo-install.sh - Phase 0/1 bootstrap driver for Domo's install UX.
 #
-# Runs the initial no-user-interaction sequence: fail-fast tooling check,
-# `domo setup`, dashboard launch, then exactly one terminal interview question.
+# Runs the install sequence: fail-fast tooling check, `domo setup`, dashboard
+# launch, one terminal interview question, activation, preflight, authoring, and
+# daemon start.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,6 +14,11 @@ DOMO="${DOMO:-$REPO_ROOT/ref/domo}"
 CLIENT="$HERE/client.sh"
 START="$HERE/start.sh"
 INSTALL_STATE_FILE="$DOMO_HOME/install-state.json"
+DOMO_LOG_FILE="$DOMO_HOME/.claude/run/domo.log"
+DOMO_META_FILE="$DOMO_HOME/.claude/domo.json"
+DOMO_WORKSPACE="$DOMO_HOME/workspace"
+PREFLIGHT_INTERVAL_SECONDS="${DOMO_PREFLIGHT_INTERVAL_SECONDS:-5}"
+PREFLIGHT_MAX_ATTEMPTS="${DOMO_PREFLIGHT_MAX_ATTEMPTS:-0}"
 
 PROMPT="Solo or group? If group, who's in the household? (names — include yourself)"
 BANNER="One quick question is waiting in your terminal — answer it to continue."
@@ -79,62 +85,191 @@ open_dashboard() {
   fi
 }
 
-push_waiting_for_interview() {
+state_defaults_filter='
+  . as $prev
+  | .interview = (
+      if (.interview | type) == "object" then
+        .interview + {
+          status: (.interview.status // (if .interview.mode then "collected" else "pending" end)),
+          members: (.interview.members // [])
+        }
+      else {status:"pending", members:[]} end
+    )
+  | .activation = (.activation // "pending")
+  | .login = (.login // "pending")
+  | .calendar = (.calendar // "pending")
+  | .build = (.build // "pending")
+  | .ready = (.ready // false)
+'
+
+write_state_jq() {
+  mkdir -p "$DOMO_HOME"
+  local filter="$1"; shift
+  local tmp
+  tmp="$(umask 077; mktemp "$DOMO_HOME/.install-state.json.XXXXXX")"
+  jq "$@" "$state_defaults_filter | $filter" "$INSTALL_STATE_FILE" 2>/dev/null > "$tmp" \
+    || jq -n "$@" "{} | $state_defaults_filter | $filter" > "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$INSTALL_STATE_FILE"
+}
+
+init_install_state() {
+  write_state_jq '.'
+}
+
+state_get() {
+  local expr="$1"
+  jq -r "$expr // empty" "$INSTALL_STATE_FILE" 2>/dev/null || true
+}
+
+set_state_field() {
+  local field="$1" value="$2"
+  write_state_jq '.[$field]=$value' --arg field "$field" --arg value "$value"
+}
+
+set_state_bool() {
+  local field="$1" value="$2"
+  write_state_jq '.[$field]=($value == "true")' --arg field "$field" --arg value "$value"
+}
+
+set_state_message() {
+  local message="$1"
+  write_state_jq '.message=$message' --arg message "$message"
+}
+
+dashboard_state_json() {
   local login_command="$DOMO login"
-  local state
-  state="$(jq -n \
+  local login_pending_message="Claude login didn't complete — run domo login in a new terminal."
+  jq -n \
     --arg banner "$BANNER" \
     --arg prompt "$PROMPT" \
     --arg loginCommand "$login_command" \
+    --arg loginPendingMessage "$login_pending_message" \
+    --slurpfile ss "$INSTALL_STATE_FILE" \
     '{
+      state: (($ss[0] // {}) as $raw
+        | $raw
+        | .interview = (
+            if (.interview | type) == "object" then
+              .interview + {
+                status: (.interview.status // (if .interview.mode then "collected" else "pending" end)),
+                members: (.interview.members // [])
+              }
+            else {status:"pending", members:[]} end
+          )
+        | .activation = (.activation // "pending")
+        | .login = (.login // "pending")
+        | .calendar = (.calendar // "pending")
+        | .build = (.build // "pending")
+        | .ready = (.ready // false))
+    } | .state as $st |
+    if $st.ready == true then {
+      title: "Domo is live",
+      kicker: "Ready",
+      subtitle: ("Domo is live — text " + (($st.live_number // $st.activation_detail.owner.send_to // $st.activation_detail.send_to // $st.activation_detail.line.provider_key // $st.activation_detail.chat.provider_key // "the Domo number") | tostring) + " to talk to it."),
+      message: "Daemon confirmed responding.",
+      done: true
+    } else {
       title: "Setting up Domo",
       kicker: "Preparing Domo",
-      subtitle: "The dashboard is ready. Answer the terminal question so setup can continue.",
-      message: $banner,
+      subtitle: (if $st.interview.status == "collected" then
+          "Domo is watching the remaining checks and will continue on its own."
+        else "The dashboard is ready. Answer the terminal question so setup can continue." end),
+      message: ($st.message // (if $st.interview.status == "collected" then "" else $banner end)),
       done: false,
       steps: [
         { id: "tooling", status: "ok", label: "Tooling check passed" },
         { id: "setup", status: "ok", label: "Domo shell prepared" },
         {
           id: "interview",
-          status: "waiting",
-          label: $prompt,
-          action: {
+          status: (if $st.interview.status == "collected" then "ok" else "waiting" end),
+          label: (if $st.interview.status == "collected" then "Household shape collected" else $prompt end),
+          action: (if $st.interview.status == "collected" then null else {
             instruction: $prompt,
             where: "terminal"
-          }
+          } end)
         },
         {
           id: "login",
-          status: "waiting",
+          status: (if $st.login == "confirmed" then "ok" else "waiting" end),
           label: "Sign in to Claude",
-          detail: "Waiting — finish domo login in your new terminal. This checks off only after preflight confirms it.",
-          action: {
+          detail: (if $st.login == "confirmed" then
+              "Confirmed by a fresh Domo session readiness marker."
+            else $loginPendingMessage end),
+          action: (if $st.login == "confirmed" then null else {
             instruction: "Open a NEW terminal, paste this command, and complete the Claude browser login there.",
             where: "terminal",
             command: $loginCommand
-          }
+          } end)
         },
         {
           id: "calendar",
-          status: "waiting",
+          status: (if $st.calendar == "confirmed" then "ok" else "waiting" end),
           label: "Enable Google Calendar",
-          detail: "Best-effort optimistic state — the installer will confirm the calendar tools inside the logged-in Domo session.",
-          action: {
+          detail: (if $st.calendar == "confirmed" then
+              "Confirmed by probing Google Calendar tools inside the logged-in Domo session."
+            else "Waiting — connect Google Calendar on the same Anthropic account, then Domo will confirm it." end),
+          action: (if $st.calendar == "confirmed" then null else {
             instruction: "Connect Google Calendar on the same Anthropic account you use for domo login.",
             where: "browser",
             link: "https://claude.ai/customize/connectors"
-          }
+          } end)
+        },
+        {
+          id: "plow",
+          status: (if $st.activation == "complete" then "ok" else "waiting" end),
+          label: (if $st.activation == "complete" then "Plow chat active" else "Activate Plow chat — text the code" end),
+          detail: (if $st.activation == "complete" then "Verified from the activation state file." else "Waiting for the activation text verification." end)
+        },
+        {
+          id: "author",
+          status: (if $st.build == "complete" then "ok" elif ($st.login == "confirmed" and $st.calendar == "confirmed" and $st.activation == "complete") then "active" else "pending" end),
+          label: (if $st.build == "complete" then "Custom Domo authored" else "Author custom Domo" end)
+        },
+        {
+          id: "start",
+          status: (if $st.ready == true then "ok" elif $st.build == "complete" then "active" else "pending" end),
+          label: (if $st.ready == true then "Daemon responding" else "Start Domo daemon" end)
         }
-      ]
-    }')"
+      ],
+      verification: (
+        if ($st.activation_detail.mode // "") == "group" then
+          ([{
+            id: "owner",
+            name: "Owner",
+            status: (if ($st.activation_detail.owner.status // "") == "verified" then "verified" else "pending" end),
+            code: ($st.activation_detail.owner.display_code // ""),
+            number: ($st.activation_detail.owner.send_to // ""),
+            isSelf: true
+          }] + [($st.activation_detail.participants // [])[] | {
+            id: .uid,
+            name: .display_name,
+            status: (if .status == "verified" then "verified" else "pending" end),
+            code: (.verification_code // ""),
+            number: (.provider_key // $st.activation_detail.chat.provider_key // $st.activation_detail.line.provider_key // "")
+          }])
+        elif ($st.activation_detail.mode // "") == "solo" then
+          [{
+            id: "solo",
+            name: "You",
+            status: (if $st.activation == "complete" then "verified" else "pending" end),
+            code: ($st.activation_detail.display_code // ""),
+            number: ($st.activation_detail.send_to // ""),
+            isSelf: true
+          }]
+        else null end)
+    } end'
+}
+
+push_dashboard_from_state() {
+  local state
+  state="$(dashboard_state_json)"
   printf '%s\n' "$state" > "$INSTALLER_STATE_DIR/state.json"
-  "$CLIENT" installer_push "$state" >/dev/null
+  "$CLIENT" installer_push "$state" >/dev/null || true
 }
 
 mark_interview_collected() {
-  "$CLIENT" installer_set message ""
-  "$CLIENT" installer_step interview ok "Household shape collected"
+  push_dashboard_from_state
 }
 
 persist_interview() {
@@ -158,24 +293,33 @@ persist_interview() {
   mkdir -p "$DOMO_HOME"
   local tmp
   tmp="$(umask 077; mktemp "$DOMO_HOME/.install-state.json.XXXXXX")"
-  jq -n --arg mode "$mode" --arg raw "$names" '
-    {
-        interview: {
-          mode: $mode,
-          members: (
-            if $mode == "group" then
-              ($raw
-                | gsub("[\r\n]+"; " ")
-                | split(",")
-                | map(gsub("^\\s+|\\s+$"; ""))
-                | map(select(length > 0)))
-            else [] end
-          )
-        }
-      }
-  ' > "$tmp"
-  chmod 600 "$tmp"
-  mv -f "$tmp" "$INSTALL_STATE_FILE"
+  jq --arg mode "$mode" --arg raw "$names" "$state_defaults_filter | .interview = {
+      status: \"collected\",
+      mode: \$mode,
+      members: (
+        if \$mode == \"group\" then
+          (\$raw
+            | gsub(\"[\\r\\n]+\"; \" \")
+            | split(\",\")
+            | map(gsub(\"^\\\\s+|\\\\s+$\"; \"\"))
+            | map(select(length > 0)))
+        else [] end
+      )
+    } | .message = \"\"" "$INSTALL_STATE_FILE" 2>/dev/null > "$tmp" \
+    || jq -n --arg mode "$mode" --arg raw "$names" "{} | $state_defaults_filter | .interview = {
+      status: \"collected\",
+      mode: \$mode,
+      members: (
+        if \$mode == \"group\" then
+          (\$raw
+            | gsub(\"[\\r\\n]+\"; \" \")
+            | split(\",\")
+            | map(gsub(\"^\\\\s+|\\\\s+$\"; \"\"))
+            | map(select(length > 0)))
+        else [] end
+      )
+    } | .message = \"\"" > "$tmp"
+  chmod 600 "$tmp"; mv -f "$tmp" "$INSTALL_STATE_FILE"
 }
 
 interview_summary() {
@@ -190,6 +334,206 @@ interview_summary() {
   ' "$INSTALL_STATE_FILE"
 }
 
+state_is_interview_collected() {
+  [[ "$(state_get '.interview.status')" == "collected" ]]
+}
+
+state_activation_complete() {
+  [[ "$(state_get '.activation')" == "complete" ]]
+}
+
+state_ready() {
+  [[ "$(state_get '.ready')" == "true" ]]
+}
+
+file_size() {
+  local file="$1"
+  [[ -f "$file" ]] || { printf '0'; return 0; }
+  stat -f '%z' "$file" 2>/dev/null || stat -c '%s' "$file" 2>/dev/null || printf '0'
+}
+
+fresh_log_has_channel_marker() {
+  local offset="$1"
+  [[ -f "$DOMO_LOG_FILE" ]] || return 1
+  dd if="$DOMO_LOG_FILE" bs=1 skip="$offset" 2>/dev/null \
+    | perl -pe 's/\e\[[0-9;?]*[ -\/]*[@-~]//g; s/\r//g' \
+    | grep -qiE 'Listening for channel|channel messages from'
+}
+
+wait_for_fresh_channel_marker() {
+  local offset="$1" seconds="${2:-20}" i
+  for i in $(seq 1 "$seconds"); do
+    fresh_log_has_channel_marker "$offset" && return 0
+    sleep 1
+  done
+  return 1
+}
+
+stop_domo_quietly() {
+  "$DOMO" stop >/dev/null 2>&1 || true
+}
+
+start_and_wait_for_fresh_marker() {
+  local offset rc out
+  offset="$(file_size "$DOMO_LOG_FILE")"
+  set +e
+  out="$("$DOMO" start 2>&1)"
+  rc=$?
+  set -e
+  printf '%s\n' "$out"
+  [[ "$rc" -eq 0 ]] || return "$rc"
+  wait_for_fresh_channel_marker "$offset" "${DOMO_PREFLIGHT_MARKER_WAIT_SECONDS:-20}"
+}
+
+probe_calendar_in_session() {
+  if [[ -n "${DOMO_PREFLIGHT_CALENDAR_CMD:-}" ]]; then
+    bash -c "$DOMO_PREFLIGHT_CALENDAR_CMD"
+    return $?
+  fi
+
+  local sid
+  sid="$(jq -r '.session_id // empty' "$DOMO_META_FILE" 2>/dev/null || true)"
+  [[ -n "$sid" ]] || return 1
+  (
+    export CLAUDE_CONFIG_DIR="$DOMO_HOME/.claude"
+    unset ANTHROPIC_API_KEY
+    cd "$DOMO_WORKSPACE"
+    claude -p --resume "$sid" --permission-mode "${DOMO_PERMISSION_MODE:-auto}" \
+      'Probe Google Calendar access by calling mcp__claude_ai_Google_Calendar__list_calendars. Reply exactly CALENDAR_OK if the tool call succeeds; otherwise reply exactly CALENDAR_MISSING.' \
+      2>/dev/null | grep -q 'CALENDAR_OK'
+  )
+}
+
+run_preflight_once() {
+  push_dashboard_from_state
+
+  if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    set_state_field login "pending"
+    set_state_message "unset ANTHROPIC_API_KEY — Domo uses your subscription, not an API key"
+    push_dashboard_from_state
+    log "preflight blocked: ANTHROPIC_API_KEY is set"
+    return 1
+  fi
+
+  log "preflight: starting Domo session and waiting for a fresh channel marker"
+  stop_domo_quietly
+  if start_and_wait_for_fresh_marker >/tmp/domo-install-preflight.out; then
+    set_state_field login "confirmed"
+    set_state_message ""
+    push_dashboard_from_state
+  else
+    set_state_field login "pending"
+    set_state_message "Claude login didn't complete — run domo login in a new terminal."
+    push_dashboard_from_state
+    log "preflight: login still pending; run domo login in a new terminal"
+    stop_domo_quietly
+    return 1
+  fi
+
+  log "preflight: probing Google Calendar tools inside the logged-in Domo session"
+  if probe_calendar_in_session; then
+    set_state_field calendar "confirmed"
+    set_state_message ""
+    push_dashboard_from_state
+    stop_domo_quietly
+    return 0
+  fi
+
+  set_state_field calendar "pending"
+  set_state_message "Google Calendar connector not confirmed — connect it on the same Anthropic account."
+  push_dashboard_from_state
+  log "preflight: calendar still pending"
+  stop_domo_quietly
+  return 1
+}
+
+author_domo() {
+  mkdir -p "$DOMO_WORKSPACE"
+  local tmp mode members
+  mode="$(state_get '.interview.mode')"
+  members="$(jq -r '(.interview.members // []) | join(", ")' "$INSTALL_STATE_FILE")"
+  tmp="$(mktemp "$DOMO_WORKSPACE/.CLAUDE.md.XXXXXX")"
+  {
+    printf '# Domo\n\n'
+    printf 'You are Domo, a household assistant reached by text through the Plow Chat channel.\n'
+    printf 'Always send user-visible replies with the channel reply tool; transcript text alone does not reach the household.\n'
+    printf 'Use Google Calendar tools for calendar questions, scheduling, and date/time checks.\n\n'
+    printf 'Household mode: %s\n' "${mode:-solo}"
+    if [[ "$mode" == "group" && -n "$members" ]]; then
+      printf 'Household members: %s\n' "$members"
+    fi
+  } > "$tmp"
+  mv -f "$tmp" "$DOMO_WORKSPACE/CLAUDE.md"
+}
+
+live_number_from_state() {
+  jq -r '
+    .activation_detail.owner.send_to
+    // .activation_detail.send_to
+    // .activation_detail.line.provider_key
+    // .activation_detail.chat.provider_key
+    // empty
+  ' "$INSTALL_STATE_FILE"
+}
+
+mark_ready() {
+  local number="$1"
+  write_state_jq '.ready=true | .build="complete" | .live_number=$number | .message=""' --arg number "$number"
+  push_dashboard_from_state
+}
+
+author_start_and_verify() {
+  log "preflight passed: authoring Domo and starting the daemon"
+  set_state_field build "active"
+  set_state_message "Authoring custom Domo."
+  push_dashboard_from_state
+
+  author_domo
+  set_state_field build "complete"
+  set_state_message "Starting Domo daemon."
+  push_dashboard_from_state
+
+  stop_domo_quietly
+  if ! start_and_wait_for_fresh_marker >/tmp/domo-install-start.out; then
+    set_state_message "Domo start did not confirm a fresh channel marker; check domo logs."
+    push_dashboard_from_state
+    log "start failed to verify; output follows"
+    sed 's/^/[domo-install] start: /' /tmp/domo-install-start.out >&2 || true
+    return 1
+  fi
+
+  local number
+  number="$(live_number_from_state)"
+  mark_ready "$number"
+  log "success: Domo is live — text ${number:-the Domo number}"
+}
+
+run_build_while_away() {
+  local attempt=0
+  while :; do
+    if state_ready; then
+      push_dashboard_from_state
+      log "ready: $(state_get '.live_number')"
+      return 0
+    fi
+    if [[ "$(state_get '.login')" == "confirmed" && "$(state_get '.calendar')" == "confirmed" && "$(state_get '.activation')" == "complete" ]]; then
+      author_start_and_verify
+      return $?
+    fi
+    attempt=$((attempt + 1))
+    run_preflight_once || true
+    if [[ "$(state_get '.login')" == "confirmed" && "$(state_get '.calendar')" == "confirmed" && "$(state_get '.activation')" == "complete" ]]; then
+      author_start_and_verify
+      return $?
+    fi
+    if [[ "$PREFLIGHT_MAX_ATTEMPTS" -gt 0 && "$attempt" -ge "$PREFLIGHT_MAX_ATTEMPTS" ]]; then
+      log "preflight incomplete after $attempt attempt(s); rerun the installer to resume from $INSTALL_STATE_FILE"
+      return 1
+    fi
+    sleep "$PREFLIGHT_INTERVAL_SECONDS"
+  done
+}
+
 main() {
   local elapsed0 t1 t2 url answer
   elapsed0="$SECONDS"
@@ -200,19 +544,37 @@ main() {
   prepare_installer_state_dir
 
   "$DOMO" setup >/dev/null 2>&1
+  init_install_state
 
   INSTALLER_NO_OPEN=1 "$START" >/dev/null
   url="$(dashboard_url)"
-  push_waiting_for_interview
+  push_dashboard_from_state
   open_dashboard "$url"
   t2="$(date +%s)"
   log "dashboard-reachable t=${t2} elapsed-from-tooling=$((t2 - t1))s url=$url"
 
-  printf '%s\n' "$PROMPT"
-  IFS= read -r answer
-  persist_interview "$answer"
-  mark_interview_collected
-  log "$(interview_summary)"
+  if ! state_is_interview_collected; then
+    printf '%s\n' "$PROMPT"
+    IFS= read -r answer
+    persist_interview "$answer"
+    mark_interview_collected
+    log "$(interview_summary)"
+  else
+    log "resuming from $INSTALL_STATE_FILE: $(interview_summary)"
+    push_dashboard_from_state
+  fi
+
+  if ! state_activation_complete; then
+    set_state_message "Activating Plow chat."
+    push_dashboard_from_state
+    "$DOMO" activate
+    push_dashboard_from_state
+  else
+    log "activation: complete (from persisted state)"
+    push_dashboard_from_state
+  fi
+
+  run_build_while_away
 }
 
 main "$@"

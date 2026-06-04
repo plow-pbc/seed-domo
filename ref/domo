@@ -515,6 +515,42 @@ write_activation_state_file() {
   chmod 600 "$tmp"; mv -f "$tmp" "$PLOW_ACTIVATION_FILE"
 }
 
+persist_solo_activation_detail() {
+  local response="$1"
+  local response_file tmp
+  response_file="$(umask 077; mktemp "${TMPDIR:-/tmp}/domo-solo-activation.XXXXXX")"
+  printf '%s' "$response" > "$response_file"
+  tmp="$(umask 077; mktemp "$DOMO_HOME/.install-state.json.XXXXXX")"
+  INSTALL_STATE_FILE="$INSTALL_STATE_FILE" BASE_URL="$PLOW_BASE_URL" bun -e '
+    const fs = require("fs");
+    const [out, responseFile] = process.argv.slice(1);
+    let state = {};
+    try { state = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8")); } catch {}
+    const a = JSON.parse(fs.readFileSync(responseFile, "utf8"));
+    state.interview = state.interview && typeof state.interview === "object"
+      ? { ...state.interview, status: state.interview.status ?? (state.interview.mode ? "collected" : "pending"), members: state.interview.members ?? [] }
+      : { status: "pending", members: [] };
+    state.activation = state.activation || "pending";
+    state.login = state.login || "pending";
+    state.calendar = state.calendar || "pending";
+    state.build = state.build || "pending";
+    state.ready = state.ready || false;
+    state.activation_detail = {
+      mode: "solo",
+      base_url: process.env.BASE_URL.replace(/\/$/, ""),
+      status: "pending",
+      activation_secret: a.activation_secret,
+      display_code: a.display_code,
+      send_to: a.send_to,
+      line_uid: a.line_id ?? a.line_uid ?? null,
+    };
+    fs.writeFileSync(out, JSON.stringify(state, null, 2) + "\n");
+  ' "$tmp" "$response_file"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$INSTALL_STATE_FILE"
+  rm -f "$response_file"
+}
+
 push_activation_dashboard_row() {
   local name="$1" status="$2" display_code="${3:-}" send_to="${4:-}" is_self="${5:-false}" row_id="${6:-}"
   _dash installer_step plow active "Activate Plow chat — text the code"
@@ -575,7 +611,17 @@ set_install_activation_status() {
     const out = process.argv.slice(1)[0];
     let prev = {};
     try { prev = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8")); } catch {}
+    prev.interview = prev.interview && typeof prev.interview === "object"
+      ? { ...prev.interview, status: prev.interview.status ?? (prev.interview.mode ? "collected" : "pending"), members: prev.interview.members ?? [] }
+      : { status: "pending", members: [] };
     prev.activation = process.env.STATUS;
+    prev.login = prev.login || "pending";
+    prev.calendar = prev.calendar || "pending";
+    prev.build = prev.build || "pending";
+    prev.ready = prev.ready || false;
+    if (prev.activation_detail?.mode === "solo" && process.env.STATUS === "complete") {
+      prev.activation_detail.status = "verified";
+    }
     fs.writeFileSync(out, JSON.stringify(prev, null, 2) + "\n");
   ' "$tmp"
   chmod 600 "$tmp"
@@ -607,6 +653,7 @@ activate_solo_path() {
   [[ -n "$display_code" && -n "$send_to" ]] || die "activation response missing display_code/send_to."
 
   write_activation_state_file "$response"
+  persist_solo_activation_detail "$response"
 
   cat >&2 <<EOF
 
@@ -713,6 +760,13 @@ persist_group_activation_detail() {
     const [out, ownerFile, lineFile, chatFile] = process.argv.slice(1);
     let state = {};
     try { state = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8")); } catch {}
+    state.interview = state.interview && typeof state.interview === "object"
+      ? { ...state.interview, status: state.interview.status ?? (state.interview.mode ? "collected" : "pending"), members: state.interview.members ?? [] }
+      : { status: "pending", members: [] };
+    state.login = state.login || "pending";
+    state.calendar = state.calendar || "pending";
+    state.build = state.build || "pending";
+    state.ready = state.ready || false;
     const owner = JSON.parse(fs.readFileSync(ownerFile, "utf8"));
     const line = JSON.parse(fs.readFileSync(lineFile, "utf8"));
     const chat = JSON.parse(fs.readFileSync(chatFile, "utf8"));
