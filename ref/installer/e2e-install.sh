@@ -57,7 +57,6 @@ if [[ "${1:-}" == "-p" ]]; then
 fi
 trap 'exit 0' TERM INT HUP
 echo "Listening for channel messages from plow-chat"
-echo "Domo test daemon responding"
 while :; do sleep 1; done
 SH
   chmod +x "$bin_dir/claude"
@@ -146,7 +145,6 @@ assert_install_result() {
   PATH="$root/bin:$PATH" DOMO_HOME="$home" "$REPO_ROOT/ref/domo" status >"$status_out" 2>&1
   grep -q 'daemon:          ALIVE' "$status_out" || fail "$mode daemon not alive"
   grep -q 'plow-chat state: present' "$status_out" || fail "$mode channel state not present in status"
-  grep -q 'Domo test daemon responding' "$log_file" || fail "$mode daemon did not emit responding marker"
 
   if [[ "$mode" == "solo" ]]; then
     jq -e '
@@ -188,6 +186,142 @@ assert_install_result() {
       and all(.activation_detail.chat.participants[]?; (.type != "member") or (.status == "active"))
     ' "group state shape invalid"
   fi
+}
+
+assert_channel_roundtrip() {
+  local mode="$1" root="$2" base_url="$3"
+  local home="$root/home" channel_dir="$REPO_ROOT/ref/channels/plow-chat"
+  local state_file="$home/.claude/plow-chat/state.json"
+  local chat_uid before_ws roundtrip_out
+  chat_uid="$(jq -r .chat_uid "$state_file")"
+  before_ws="$(curl -fsS "$base_url/_stub/calls" | jq -r '.ws_connect // 0')"
+  roundtrip_out="$root/channel-roundtrip.out"
+
+  CHANNEL_DIR="$channel_dir" \
+  PLOW_CHAT_STATE="$state_file" \
+  PLOW_STUB_BASE_URL="$base_url" \
+  PLOW_STUB_CHAT_UID="$chat_uid" \
+  PLOW_STUB_BEFORE_WS="$before_ws" \
+  PLOW_STUB_INBOUND="E2E inbound $mode" \
+  PLOW_STUB_REPLY="E2E reply $mode" \
+  bun -e '
+    import { pathToFileURL } from "node:url";
+
+    const channelDir = process.env.PLOW_CHANNEL_DIR || process.env.CHANNEL_DIR;
+    const sdkBase = `${channelDir}/node_modules/@modelcontextprotocol/sdk/dist/esm`;
+    const { Client } = await import(pathToFileURL(`${sdkBase}/client/index.js`).href);
+    const { StdioClientTransport } = await import(pathToFileURL(`${sdkBase}/client/stdio.js`).href);
+
+    const baseUrl = process.env.PLOW_STUB_BASE_URL;
+    const chatUid = process.env.PLOW_STUB_CHAT_UID;
+    const beforeWs = Number(process.env.PLOW_STUB_BEFORE_WS || 0);
+    const inboundText = process.env.PLOW_STUB_INBOUND;
+    const replyText = process.env.PLOW_STUB_REPLY;
+    const stateFile = process.env.PLOW_CHAT_STATE;
+
+    function fail(message) {
+      console.error(message);
+      process.exit(1);
+    }
+    async function sleep(ms) {
+      await new Promise((resolve) => setTimeout(resolve, ms));
+    }
+    async function jsonFetch(url, options = {}) {
+      const res = await fetch(url, options);
+      if (!res.ok) fail(`${options.method || "GET"} ${url} -> HTTP ${res.status}: ${await res.text()}`);
+      return await res.json();
+    }
+    async function waitFor(predicate, label, timeoutMs = 10000) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const value = await predicate();
+        if (value) return value;
+        await sleep(150);
+      }
+      fail(`timed out waiting for ${label}`);
+    }
+
+    const client = new Client({ name: "domo-e2e-channel-host", version: "1.0.0" }, { capabilities: {} });
+    let sawNotificationResolve;
+    const sawNotification = new Promise((resolve) => { sawNotificationResolve = resolve; });
+    client.fallbackNotificationHandler = (notification) => {
+      if (notification.method === "notifications/claude/channel") {
+        sawNotificationResolve(notification);
+      }
+    };
+
+    const transport = new StdioClientTransport({
+      command: "bun",
+      args: ["server.ts"],
+      cwd: channelDir,
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        PLOW_CHAT_STATE: stateFile,
+      },
+      stderr: "pipe",
+    });
+    const stderr = [];
+    transport.stderr?.on("data", (chunk) => stderr.push(String(chunk)));
+
+    try {
+      await client.connect(transport);
+      await waitFor(async () => {
+        const calls = await jsonFetch(`${baseUrl}/_stub/calls`);
+        return Number(calls.ws_connect || 0) > beforeWs;
+      }, "plow-chat WSS connection");
+
+      await jsonFetch(`${baseUrl}/_stub/inbound`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_uid: chatUid,
+          body: inboundText,
+          from: "+15550109999",
+          display_name: "E2E Sender",
+        }),
+      });
+
+      const notification = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("timed out waiting for channel notification")), 10000);
+        sawNotification.then((value) => {
+          clearTimeout(timer);
+          resolve(value);
+        });
+      });
+      if (notification.params?.content !== inboundText) {
+        fail(`channel notification content mismatch: ${JSON.stringify(notification.params)}`);
+      }
+      if (notification.params?.meta?.chat_id !== chatUid) {
+        fail(`channel notification chat_id mismatch: ${JSON.stringify(notification.params?.meta)}`);
+      }
+
+      const result = await client.callTool({ name: "reply", arguments: { text: replyText } });
+      if (result.isError) fail(`reply tool returned error: ${JSON.stringify(result)}`);
+
+      await waitFor(async () => {
+        const body = await jsonFetch(`${baseUrl}/_stub/messages?chat_uid=${encodeURIComponent(chatUid)}`);
+        return (body.data || []).some((m) => m.direction === "outbound" && m.body === replyText);
+      }, "outbound reply message");
+
+      const calls = await jsonFetch(`${baseUrl}/_stub/calls`);
+      if (!calls.sequence.some((c) => c.method === "POST" && c.path === `/v1/chats/${chatUid}/messages`)) {
+        fail(`outbound send missing from call sequence: ${JSON.stringify(calls.sequence)}`);
+      }
+      console.log(JSON.stringify({
+        inbound: inboundText,
+        outbound: replyText,
+        ws_connect: calls.ws_connect,
+        outbound_messages: calls.outbound_messages,
+      }));
+    } finally {
+      await client.close().catch(() => {});
+      if (stderr.length) console.error(stderr.join(""));
+    }
+  ' >"$roundtrip_out" 2>"$root/channel-roundtrip.err" \
+    || { cat "$roundtrip_out" >&2 || true; cat "$root/channel-roundtrip.err" >&2 || true; fail "$mode channel round-trip failed"; }
+
+  log "$mode: channel round-trip PASS $(cat "$roundtrip_out")"
 }
 
 run_case() {
@@ -233,6 +367,7 @@ EOF
   }
 
   assert_install_result "$mode" "$root" "$base_url"
+  assert_channel_roundtrip "$mode" "$root" "$base_url"
   log "$mode: PASS ready=$(jq -r .ready "$root/home/install-state.json") live_number=$(jq -r .live_number "$root/home/install-state.json") calls=$(jq -c '.sequence' "$root/calls.json")"
   cleanup_current
 }

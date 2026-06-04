@@ -85,6 +85,8 @@ Test helper endpoints:
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/_stub/text` | Simulate a phone texting an exact activation or `VERIFY-*` code. |
+| `POST` | `/_stub/inbound` | Emit a `message_received` WSS frame for an active chat. |
+| `GET` | `/_stub/messages?chat_uid=...` | Inspect inbound/outbound messages recorded for a chat. |
 | `POST` | `/_stub/config` | Set `ws_close_on_open`, `redeem_error_status`, or `response_delay_ms`. |
 | `GET` | `/_stub/calls` | Return counters and ordered Plow API call sequence. |
 

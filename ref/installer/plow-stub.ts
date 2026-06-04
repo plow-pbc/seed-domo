@@ -21,6 +21,8 @@
 //
 // Test-only helpers:
 //   POST /_stub/text       {"text":"<exact activation or VERIFY code>","from":"+1555..."}
+//   POST /_stub/inbound    {"chat_uid":"cht_...","body":"...","from":"+1555...","display_name":"Pat"}
+//   GET  /_stub/messages?chat_uid=cht_...
 //   POST /_stub/config     {"ws_close_on_open":true|false,"response_delay_ms":0}
 //   GET  /_stub/calls      counters plus ordered Plow API sequence
 
@@ -67,6 +69,18 @@ type CallRecord = {
   path: string;
 };
 
+type StubMessage = {
+  uid: string;
+  direction: "inbound" | "outbound";
+  body: string;
+  chat_uid: string;
+  sender?: {
+    display_name?: string;
+    provider_key?: string;
+  };
+  created_at: string;
+};
+
 const line = {
   object: "line",
   uid: "ln_stub_000001",
@@ -78,6 +92,7 @@ const activations = new Map<string, Activation>();
 const tokens = new Map<string, Activation>();
 const activationCodes = new Map<string, string>();
 const chats = new Map<string, Chat>();
+const messages = new Map<string, StubMessage[]>();
 const verificationCodes = new Map<string, { chatUid: string; participantUid: string }>();
 const tickets = new Map<string, string>();
 const sockets = new Set<any>();
@@ -90,8 +105,21 @@ const calls: {
   resend: number;
   ws_ticket: number;
   ws_connect: number;
+  inbound_messages: number;
+  outbound_messages: number;
   sequence: CallRecord[];
-} = { activate: 0, redeem: 0, lines: 0, chats: 0, resend: 0, ws_ticket: 0, ws_connect: 0, sequence: [] };
+} = {
+  activate: 0,
+  redeem: 0,
+  lines: 0,
+  chats: 0,
+  resend: 0,
+  ws_ticket: 0,
+  ws_connect: 0,
+  inbound_messages: 0,
+  outbound_messages: 0,
+  sequence: [],
+};
 let wsCloseOnOpen = process.env.PLOW_STUB_WS_CLOSE_ON_OPEN === "1";
 let redeemErrorStatus = 0;
 let responseDelayMs = 0;
@@ -161,6 +189,36 @@ function activationResponse(activation: Activation): Record<string, unknown> {
   };
 }
 
+function ensureSoloChat(activation: Activation): void {
+  if (!activation.provisionChat || chats.has(activation.chatUid)) return;
+  const chat: Chat = {
+    uid: activation.chatUid,
+    object: "chat",
+    status: "active",
+    provider_key: line.provider_key,
+    failure_reason: null,
+    participants: [
+      { type: "agent", line },
+      {
+        type: "member",
+        object: "chat_participant",
+        uid: id("cp"),
+        status: "active",
+        display_name: "You",
+        provider_type: "imessage",
+        provider_key: "+15550100001",
+        verification_code: "",
+        verification_code_expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        verified_at: new Date().toISOString(),
+        joined_at: new Date().toISOString(),
+      },
+    ],
+    created_at: new Date().toISOString(),
+  };
+  chats.set(chat.uid, chat);
+  messages.set(chat.uid, []);
+}
+
 function createActivation(body: Record<string, unknown>): Response {
   calls.activate++;
   record("POST", "/v1/auth/activate");
@@ -196,6 +254,7 @@ function redeemActivation(body: Record<string, unknown>): Response {
   if (!activation) return error(404, "unknown activation_secret");
   if (!activation.verified) return json({ status: "pending" });
   tokens.set(activation.token, activation);
+  ensureSoloChat(activation);
   return json({
     status: "verified",
     token: activation.token,
@@ -254,6 +313,7 @@ function createChat(req: Request, body: Record<string, unknown>): Response {
     created_at: new Date().toISOString(),
   };
   chats.set(chat.uid, chat);
+  messages.set(chat.uid, []);
   for (const participant of memberParticipants) {
     verificationCodes.set(participant.verification_code, {
       chatUid: chat.uid,
@@ -299,6 +359,70 @@ function emit(chatUid: string, frame: Record<string, unknown>): void {
   for (const ws of sockets) {
     if (ws.data?.chatUid === chatUid) ws.send(text);
   }
+}
+
+function chatMessages(chatUid: string): StubMessage[] {
+  const arr = messages.get(chatUid);
+  if (arr) return arr;
+  const fresh: StubMessage[] = [];
+  messages.set(chatUid, fresh);
+  return fresh;
+}
+
+function receiveInbound(body: Record<string, unknown>): Response {
+  const chatUid = String(body.chat_uid || "").trim();
+  const text = String(body.body || "").trim();
+  if (!chatUid || !chats.has(chatUid)) return error(404, "unknown chat_uid");
+  if (!text) return error(400, "body is required");
+  calls.inbound_messages++;
+  record("POST", "/_stub/inbound");
+  const message: StubMessage = {
+    uid: id("msg"),
+    direction: "inbound",
+    body: text,
+    chat_uid: chatUid,
+    sender: {
+      display_name: body.display_name ? String(body.display_name) : "Test Sender",
+      provider_key: body.from ? String(body.from) : "+15550109999",
+    },
+    created_at: new Date().toISOString(),
+  };
+  chatMessages(chatUid).push(message);
+  emit(chatUid, { type: "message_received", message });
+  return json({ status: "delivered", message });
+}
+
+function listMessages(req: Request, chatUid: string): Response {
+  const auth = requireToken(req);
+  if (auth instanceof Response) return auth;
+  if (!chats.has(chatUid)) return error(404, "unknown chat");
+  record("GET", `/v1/chats/${chatUid}/messages`);
+  return json({ object: "list", data: chatMessages(chatUid), has_more: false, url: `/v1/chats/${chatUid}/messages` });
+}
+
+async function sendMessage(req: Request, chatUid: string): Promise<Response> {
+  const auth = requireToken(req);
+  if (auth instanceof Response) return auth;
+  const chat = chats.get(chatUid);
+  if (!chat) return error(404, "unknown chat");
+  if (chat.status !== "active") return error(409, "chat_not_ready");
+  const body = await parseJson(req);
+  if (body instanceof Response) return body;
+  const text = String(body.body || "").trim();
+  if (!text) return error(400, "body is required");
+  calls.outbound_messages++;
+  record("POST", `/v1/chats/${chatUid}/messages`);
+  const message: StubMessage = {
+    uid: id("msg"),
+    direction: "outbound",
+    body: text,
+    chat_uid: chatUid,
+    sender: { display_name: "Domo", provider_key: line.provider_key },
+    created_at: new Date().toISOString(),
+  };
+  chatMessages(chatUid).push(message);
+  emit(chatUid, { type: "message_status_updated", message });
+  return json({ uid: message.uid, status: "sent" }, 201);
 }
 
 function receiveText(body: Record<string, unknown>): Response {
@@ -350,6 +474,16 @@ const server = Bun.serve({
     const { pathname } = url;
     if (pathname === "/healthz" && req.method === "GET") return json({ status: "ok" });
     if (pathname === "/_stub/calls" && req.method === "GET") return json(calls);
+    if (pathname === "/_stub/messages" && req.method === "GET") {
+      const chatUid = url.searchParams.get("chat_uid") || "";
+      if (!chatUid) return error(400, "chat_uid query param is required");
+      return json({ object: "list", data: chatMessages(chatUid), has_more: false });
+    }
+    if (pathname === "/_stub/inbound" && req.method === "POST") {
+      const body = await parseJson(req);
+      if (body instanceof Response) return body;
+      return receiveInbound(body);
+    }
     if (pathname === "/_stub/config" && req.method === "POST") {
       const body = await parseJson(req);
       if (body instanceof Response) return body;
@@ -386,6 +520,11 @@ const server = Bun.serve({
     {
       const resendMatch = pathname.match(/^\/v1\/chats\/([^/]+)\/invitations\/([^/]+)\/resend$/);
       if (resendMatch && req.method === "POST") return resendInvitation(req, resendMatch[1], resendMatch[2]);
+    }
+    {
+      const messagesMatch = pathname.match(/^\/v1\/chats\/([^/]+)\/messages$/);
+      if (messagesMatch && req.method === "GET") return listMessages(req, messagesMatch[1]);
+      if (messagesMatch && req.method === "POST") return sendMessage(req, messagesMatch[1]);
     }
     if (pathname === "/v1/ws/ticket" && req.method === "POST") {
       const body = await parseJson(req);

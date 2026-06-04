@@ -13,11 +13,20 @@ the live install action, `ref/installer/domo-install.sh`, against the local Plow
 stub. The runner asserts:
 
 - the installer reaches `ready=true`;
-- the daemon is alive and emits a responding marker;
+- the daemon is alive;
+- the real `ref/channels/plow-chat/server.ts` receives a stub WSS inbound
+  `message_received` frame, emits the Claude channel notification, and sends an
+  outbound reply through its real `reply` tool (`POST /v1/chats/{uid}/messages`);
 - the Plow API call sequence matches the solo/group path;
 - `.claude/plow-chat/state.json` is chmod 600 and contains exactly
   `{base_url, token, chat_uid}`;
 - the final install state reflects the chosen solo/group activation.
+
+Coverage gap: the E2E uses a fake Claude CLI for deterministic login/preflight
+and a direct MCP client as the Claude host for the channel round-trip. It proves
+the install action, Plow stub, real channel server inbound delivery, and real
+reply send path. It does not prove Claude Code's proprietary host loads the MCP
+registration or that an LLM chooses to call `reply`.
 
 ## Plow Stub
 
@@ -54,7 +63,7 @@ sequence.
 3. Before answering the terminal question, confirm the dashboard banner says:
 
    ```text
-   One quick question is waiting in your terminal - answer it to continue.
+   One quick question is waiting in your terminal — answer it to continue.
    ```
 
 4. Confirm the login and Calendar rows appear immediately:
