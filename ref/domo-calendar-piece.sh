@@ -19,6 +19,8 @@ WORKSPACE="${DOMO_CALENDAR_WORKSPACE:-$DOMO_HOME/calendar-check-workspace}"
 RUN_DIR="$CONFIG_DIR/run"
 CALENDAR_TOOL="mcp__claude_ai_Google_Calendar__list_calendars"
 PROBE_TIMEOUT_SECONDS="${DOMO_CALENDAR_TIMEOUT_SECONDS:-90}"
+WAIT_TIMEOUT_SECONDS="${DOMO_CALENDAR_WAIT_TIMEOUT_SECONDS:-600}"
+WAIT_POLL_INTERVAL_SECONDS="${DOMO_CALENDAR_WAIT_POLL_INTERVAL_SECONDS:-5}"
 MAX_BUDGET_USD="${DOMO_CALENDAR_MAX_BUDGET_USD:-0.50}"
 CONNECT_URL="https://claude.ai/customize/connectors"
 
@@ -173,12 +175,68 @@ cmd_harness() {
   probe_calendar
 }
 
+cmd_wait() {
+  require_tool claude
+  require_tool jq
+  require_tool perl
+  mkdir -p "$CONFIG_DIR" "$WORKSPACE" "$RUN_DIR"
+
+  local start now deadline next_note probe_out probe_err rc
+  start="$(date +%s)"
+  deadline=$((start + WAIT_TIMEOUT_SECONDS))
+  next_note="$start"
+  probe_out=""
+  probe_err=""
+
+  log "Waiting up to ${WAIT_TIMEOUT_SECONDS}s for Google Calendar connector confirmation."
+  log "If needed, connect Google Calendar at $CONNECT_URL for the same Anthropic account."
+
+  while :; do
+    now="$(date +%s)"
+    if (( now >= deadline )); then
+      err "Timed out after ${WAIT_TIMEOUT_SECONDS}s waiting for Google Calendar connector confirmation."
+      err "Connect Google Calendar at $CONNECT_URL for the same Anthropic account, then rerun wait."
+      if [[ -n "$probe_out" && -s "$probe_out" ]]; then
+        sed 's/^/[domo-calendar] last probe: /' "$probe_out" | tail -12 >&2
+      fi
+      if [[ -n "$probe_err" && -s "$probe_err" ]]; then
+        sed 's/^/[domo-calendar] last probe stderr: /' "$probe_err" | tail -12 >&2
+      fi
+      return 1
+    fi
+
+    probe_out="$(mktemp "$RUN_DIR/calendar-wait.out.XXXXXX")"
+    probe_err="$(mktemp "$RUN_DIR/calendar-wait.err.XXXXXX")"
+    set +e
+    ( probe_calendar ) >"$probe_out" 2>"$probe_err"
+    rc=$?
+    set -e
+
+    if [[ "$rc" -eq 0 ]]; then
+      cat "$probe_out"
+      if [[ -s "$probe_err" ]]; then
+        cat "$probe_err" >&2
+      fi
+      return 0
+    fi
+
+    now="$(date +%s)"
+    if (( now >= next_note )); then
+      log "Still waiting for Google Calendar connector confirmation..."
+      next_note=$((now + 30))
+    fi
+
+    sleep "$WAIT_POLL_INTERVAL_SECONDS"
+  done
+}
+
 usage() {
   cat <<USAGE
 Usage: DOMO_HOME=/authenticated/domo-home $SCRIPT_PATH <command>
 
 Commands:
   check     Probe Google Calendar connector once
+  wait      Block-poll connector check until CONNECTED or timeout
   harness   Print the check command, run it, and report CONNECTED/NOT_CONNECTED
 
 If DOMO_HOME is omitted, a temp isolated home is created. For a real connector
@@ -188,6 +246,7 @@ USAGE
 
 case "${1:-harness}" in
   check) shift; probe_calendar "$@" ;;
+  wait) shift; cmd_wait "$@" ;;
   harness) shift; cmd_harness "$@" ;;
   -h|--help|help) usage ;;
   *) err "unknown command '${1:-}'"; usage >&2; exit 2 ;;

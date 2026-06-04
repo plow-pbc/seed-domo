@@ -134,6 +134,14 @@ update it MUST NOT block the four verified pieces.
 
 Who runs what:
 
+- The agent pushes the login step as `waiting`; this is the dashboard's
+  "Watching" state. The agent MUST NOT push this state until it is ready to
+  start the blocking wait below:
+
+  ```bash
+  ref/installer/client.sh installer_step login waiting "Sign in to Claude" terminal "DOMO_HOME=$HOME/.domo ref/domo-login-piece.sh login" || true
+  ```
+
 - The agent tells the user to run this command in their own terminal:
 
   ```bash
@@ -141,72 +149,56 @@ Who runs what:
   ```
 
 - The user completes the browser-based Claude subscription login.
-- The agent polls until login is confirmed:
+- After relaying the login command, the agent runs the blocking login wait while
+  the dashboard remains in the `waiting` state. The wait polls until the isolated
+  Claude subscription auth is confirmed:
 
   ```bash
-  DOMO_HOME=$HOME/.domo ref/domo-login-piece.sh status
+  DOMO_HOME=$HOME/.domo ref/domo-login-piece.sh wait
   ```
 
-Done when the status output reports `CONFIRMED`. If status is not confirmed, the
-agent waits and retries. The agent MUST NOT ask for, print, or copy Claude auth
-tokens.
+Done when the wait command exits 0 after reporting `CONFIRMED`. If it times out
+or exits nonzero, the agent surfaces the failure. The agent MUST NOT ask for,
+print, or copy Claude auth tokens.
 
-Dashboard updates:
-
-```bash
-ref/installer/client.sh installer_step login waiting "Sign in to Claude" terminal "DOMO_HOME=$HOME/.domo ref/domo-login-piece.sh login" || true
-```
-
-When confirmed:
+When the blocking wait exits 0:
 
 ```bash
 ref/installer/client.sh installer_step login ok "Signed in to Claude" || true
-ref/installer/client.sh installer_step calendar active "Checking Google Calendar" || true
 ```
 
 **Step 2 - Calendar.**
 
 Who runs what:
 
-- The agent probes the connector:
+- The agent pushes the Calendar step as `waiting`; this is the dashboard's
+  "Watching" state. The agent MUST NOT push this state until it is ready to
+  start the blocking wait below:
 
   ```bash
-  DOMO_HOME=$HOME/.domo ref/domo-calendar-piece.sh check
+  ref/installer/client.sh installer_step calendar waiting "Connect Google Calendar" browser "https://claude.ai/customize/connectors" || true
   ```
 
-- If the result is `CONNECTED`, continue.
-- If the result is `NOT_CONNECTED`, the agent tells the user to connect Google
-  Calendar for the same Anthropic account at:
+- The agent tells the user to connect Google Calendar for the same Anthropic
+  account at:
 
   ```text
   https://claude.ai/customize/connectors
   ```
 
-- After the user says it is connected, the agent re-runs:
+- After relaying the connector action, the agent runs the blocking Calendar wait
+  while the dashboard remains in the `waiting` state. The wait repeatedly probes
+  the connector until it is confirmed:
 
   ```bash
-  DOMO_HOME=$HOME/.domo ref/domo-calendar-piece.sh check
+  DOMO_HOME=$HOME/.domo ref/domo-calendar-piece.sh wait
   ```
 
-Done when the calendar piece reports `CONNECTED`. The agent MUST keep retrying
-the probe after user action; it MUST NOT mark Calendar complete from user
-assertion alone.
+Done when the wait command exits 0 after reporting `CONNECTED`. The agent MUST
+NOT wait for the user to say the connector is done and MUST NOT mark Calendar
+complete from user assertion alone.
 
-Dashboard updates:
-
-Before probing:
-
-```bash
-ref/installer/client.sh installer_step calendar active "Checking Google Calendar" || true
-```
-
-If the probe reports `NOT_CONNECTED`, show exactly one browser action:
-
-```bash
-ref/installer/client.sh installer_step calendar waiting "Connect Google Calendar" browser "https://claude.ai/customize/connectors" || true
-```
-
-When connected:
+When the blocking wait exits 0:
 
 ```bash
 ref/installer/client.sh installer_step calendar ok "Google Calendar connected" || true
