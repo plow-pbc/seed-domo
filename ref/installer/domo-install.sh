@@ -17,13 +17,19 @@ INSTALL_STATE_FILE="$DOMO_HOME/install-state.json"
 DOMO_LOG_FILE="$DOMO_HOME/.claude/run/domo.log"
 DOMO_META_FILE="$DOMO_HOME/.claude/domo.json"
 DOMO_WORKSPACE="$DOMO_HOME/workspace"
+DOMO_WORKSPACE_SLUG="$(printf '%s' "$DOMO_WORKSPACE" | sed 's/[\/.]/-/g')"
+DOMO_PROJECTS_DIR="$DOMO_HOME/.claude/projects/$DOMO_WORKSPACE_SLUG"
 PREFLIGHT_INTERVAL_SECONDS="${DOMO_PREFLIGHT_INTERVAL_SECONDS:-5}"
 PREFLIGHT_MAX_ATTEMPTS="${DOMO_PREFLIGHT_MAX_ATTEMPTS:-0}"
+CALENDAR_PROBE_TIMEOUT_SECONDS="${DOMO_CALENDAR_PROBE_TIMEOUT_SECONDS:-45}"
+PREFLIGHT_CONFIRMED_THIS_RUN=0
+INSTALL_RUN_TMP_DIR=""
 
 PROMPT="Solo or group? If group, who's in the household? (names — include yourself)"
 BANNER="One quick question is waiting in your terminal — answer it to continue."
 
 log() { printf '[domo-install] %s\n' "$*"; }
+die() { printf '[domo-install] ERROR: %s\n' "$*" >&2; exit 1; }
 fail_tool() { printf 'missing required tool: %s\n' "$1" >&2; exit 1; }
 
 need_tool() {
@@ -107,8 +113,14 @@ write_state_jq() {
   local filter="$1"; shift
   local tmp
   tmp="$(umask 077; mktemp "$DOMO_HOME/.install-state.json.XXXXXX")"
-  jq "$@" "$state_defaults_filter | $filter" "$INSTALL_STATE_FILE" 2>/dev/null > "$tmp" \
-    || jq -n "$@" "{} | $state_defaults_filter | $filter" > "$tmp"
+  if [[ -f "$INSTALL_STATE_FILE" ]]; then
+    if ! jq "$@" "$state_defaults_filter | $filter" "$INSTALL_STATE_FILE" > "$tmp"; then
+      rm -f "$tmp"
+      die "cannot read/parse $INSTALL_STATE_FILE; refusing to overwrite install state because it may hold one-time activation codes"
+    fi
+  else
+    jq -n "$@" "{} | $state_defaults_filter | $filter" > "$tmp"
+  fi
   chmod 600 "$tmp"
   mv -f "$tmp" "$INSTALL_STATE_FILE"
 }
@@ -290,36 +302,22 @@ persist_interview() {
     names=""
   fi
 
-  mkdir -p "$DOMO_HOME"
-  local tmp
-  tmp="$(umask 077; mktemp "$DOMO_HOME/.install-state.json.XXXXXX")"
-  jq --arg mode "$mode" --arg raw "$names" "$state_defaults_filter | .interview = {
-      status: \"collected\",
-      mode: \$mode,
+  write_state_jq '
+    .interview = {
+      status: "collected",
+      mode: $mode,
       members: (
-        if \$mode == \"group\" then
-          (\$raw
-            | gsub(\"[\\r\\n]+\"; \" \")
-            | split(\",\")
-            | map(gsub(\"^\\\\s+|\\\\s+$\"; \"\"))
+        if $mode == "group" then
+          ($raw
+            | gsub("[\r\n]+"; " ")
+            | split(",")
+            | map(gsub("^\\s+|\\s+$"; ""))
             | map(select(length > 0)))
         else [] end
       )
-    } | .message = \"\"" "$INSTALL_STATE_FILE" 2>/dev/null > "$tmp" \
-    || jq -n --arg mode "$mode" --arg raw "$names" "{} | $state_defaults_filter | .interview = {
-      status: \"collected\",
-      mode: \$mode,
-      members: (
-        if \$mode == \"group\" then
-          (\$raw
-            | gsub(\"[\\r\\n]+\"; \" \")
-            | split(\",\")
-            | map(gsub(\"^\\\\s+|\\\\s+$\"; \"\"))
-            | map(select(length > 0)))
-        else [] end
-      )
-    } | .message = \"\"" > "$tmp"
-  chmod 600 "$tmp"; mv -f "$tmp" "$INSTALL_STATE_FILE"
+    }
+    | .message = ""
+  ' --arg mode "$mode" --arg raw "$names"
 }
 
 interview_summary() {
@@ -385,26 +383,93 @@ start_and_wait_for_fresh_marker() {
   wait_for_fresh_channel_marker "$offset" "${DOMO_PREFLIGHT_MARKER_WAIT_SECONDS:-20}"
 }
 
-probe_calendar_in_session() {
-  if [[ -n "${DOMO_PREFLIGHT_CALENDAR_CMD:-}" ]]; then
-    bash -c "$DOMO_PREFLIGHT_CALENDAR_CMD"
-    return $?
-  fi
-
+calendar_transcript_path() {
   local sid
   sid="$(jq -r '.session_id // empty' "$DOMO_META_FILE" 2>/dev/null || true)"
   [[ -n "$sid" ]] || return 1
+  printf '%s/%s.jsonl' "$DOMO_PROJECTS_DIR" "$sid"
+}
+
+calendar_tool_result_confirmed() {
+  local transcript="$1" offset="$2"
+  [[ -f "$transcript" ]] || return 1
+  TRANSCRIPT_FILE="$transcript" TRANSCRIPT_OFFSET="$offset" bun -e '
+    const fs = require("fs");
+    const file = process.env.TRANSCRIPT_FILE;
+    const offset = Number(process.env.TRANSCRIPT_OFFSET || 0);
+    let data = "";
+    try { data = fs.readFileSync(file, "utf8").slice(offset); } catch { process.exit(1); }
+    const calendarTool = "mcp__claude_ai_Google_Calendar__list_calendars";
+    const toolIds = new Set();
+    let sawCalendarTool = false;
+    let confirmed = false;
+    function flatten(value) {
+      if (value == null) return "";
+      if (typeof value === "string") return value;
+      if (Array.isArray(value)) return value.map(flatten).join("\n");
+      if (typeof value === "object") {
+        if (typeof value.text === "string") return value.text;
+        return JSON.stringify(value);
+      }
+      return String(value);
+    }
+    for (const line of data.split(/\n/)) {
+      if (!line.trim()) continue;
+      let event;
+      try { event = JSON.parse(line); } catch { continue; }
+      const content = event?.message?.content;
+      if (!Array.isArray(content)) continue;
+      for (const item of content) {
+        if (item?.type === "tool_use" && item?.name === calendarTool) {
+          sawCalendarTool = true;
+          if (item.id) toolIds.add(item.id);
+        }
+        if (item?.type === "tool_result" && item?.is_error !== true) {
+          const linked = item.tool_use_id ? toolIds.has(item.tool_use_id) : sawCalendarTool;
+          const text = flatten(item.content).trim();
+          if (linked && text.length > 2 && !/(permission denied|not found|failed|error|missing)/i.test(text)) {
+            confirmed = true;
+          }
+        }
+      }
+    }
+    process.exit(confirmed ? 0 : 1);
+  '
+}
+
+probe_calendar_in_session() {
+  if [[ -n "${DOMO_PREFLIGHT_CALENDAR_CMD:-}" && "${DOMO_TEST_ALLOW_FAKE_CALENDAR_PROBE:-0}" == "1" ]]; then
+    bash -c "$DOMO_PREFLIGHT_CALENDAR_CMD"
+    return $?
+  elif [[ -n "${DOMO_PREFLIGHT_CALENDAR_CMD:-}" ]]; then
+    log "ignoring DOMO_PREFLIGHT_CALENDAR_CMD because DOMO_TEST_ALLOW_FAKE_CALENDAR_PROBE is not set"
+  fi
+
+  local sid transcript offset out err rc
+  sid="$(jq -r '.session_id // empty' "$DOMO_META_FILE" 2>/dev/null || true)"
+  [[ -n "$sid" ]] || return 1
+  transcript="$(calendar_transcript_path)" || return 1
+  offset="$(file_size "$transcript")"
+  out="$INSTALL_RUN_TMP_DIR/calendar-probe.out"
+  err="$INSTALL_RUN_TMP_DIR/calendar-probe.err"
+  set +e
   (
     export CLAUDE_CONFIG_DIR="$DOMO_HOME/.claude"
     unset ANTHROPIC_API_KEY
     cd "$DOMO_WORKSPACE"
-    claude -p --resume "$sid" --permission-mode "${DOMO_PERMISSION_MODE:-auto}" \
-      'Probe Google Calendar access by calling mcp__claude_ai_Google_Calendar__list_calendars. Reply exactly CALENDAR_OK if the tool call succeeds; otherwise reply exactly CALENDAR_MISSING.' \
-      2>/dev/null | grep -q 'CALENDAR_OK'
-  )
+    perl -e 'alarm shift; exec @ARGV' "$CALENDAR_PROBE_TIMEOUT_SECONDS" \
+      claude -p --resume "$sid" --permission-mode "${DOMO_PERMISSION_MODE:-auto}" \
+        'Call mcp__claude_ai_Google_Calendar__list_calendars now. After the tool result returns, summarize the number of calendars and one calendar name or id. Do not claim success unless the tool result is available.'
+  ) >"$out" 2>"$err"
+  rc=$?
+  set -e
+  [[ "$rc" -eq 0 ]] || return 1
+  calendar_tool_result_confirmed "$transcript" "$offset"
 }
 
 run_preflight_once() {
+  local started=0 rc=1 preflight_out
+  preflight_out="$INSTALL_RUN_TMP_DIR/preflight-start.out"
   push_dashboard_from_state
 
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
@@ -417,7 +482,8 @@ run_preflight_once() {
 
   log "preflight: starting Domo session and waiting for a fresh channel marker"
   stop_domo_quietly
-  if start_and_wait_for_fresh_marker >/tmp/domo-install-preflight.out; then
+  if start_and_wait_for_fresh_marker >"$preflight_out"; then
+    started=1
     set_state_field login "confirmed"
     set_state_message ""
     push_dashboard_from_state
@@ -435,16 +501,18 @@ run_preflight_once() {
     set_state_field calendar "confirmed"
     set_state_message ""
     push_dashboard_from_state
-    stop_domo_quietly
-    return 0
+    PREFLIGHT_CONFIRMED_THIS_RUN=1
+    rc=0
+  else
+    set_state_field calendar "pending"
+    set_state_message "Google Calendar connector not confirmed — connect it on the same Anthropic account."
+    push_dashboard_from_state
+    log "preflight: calendar still pending"
+    rc=1
   fi
 
-  set_state_field calendar "pending"
-  set_state_message "Google Calendar connector not confirmed — connect it on the same Anthropic account."
-  push_dashboard_from_state
-  log "preflight: calendar still pending"
-  stop_domo_quietly
-  return 1
+  [[ "$started" -eq 1 ]] && stop_domo_quietly
+  return "$rc"
 }
 
 author_domo() {
@@ -483,22 +551,25 @@ mark_ready() {
 }
 
 author_start_and_verify() {
+  local start_out
+  start_out="$INSTALL_RUN_TMP_DIR/final-start.out"
   log "preflight passed: authoring Domo and starting the daemon"
   set_state_field build "active"
   set_state_message "Authoring custom Domo."
   push_dashboard_from_state
 
   author_domo
-  set_state_field build "complete"
   set_state_message "Starting Domo daemon."
   push_dashboard_from_state
 
   stop_domo_quietly
-  if ! start_and_wait_for_fresh_marker >/tmp/domo-install-start.out; then
+  if ! start_and_wait_for_fresh_marker >"$start_out"; then
+    stop_domo_quietly
+    set_state_field build "pending"
     set_state_message "Domo start did not confirm a fresh channel marker; check domo logs."
     push_dashboard_from_state
     log "start failed to verify; output follows"
-    sed 's/^/[domo-install] start: /' /tmp/domo-install-start.out >&2 || true
+    sed 's/^/[domo-install] start: /' "$start_out" >&2 || true
     return 1
   fi
 
@@ -516,13 +587,13 @@ run_build_while_away() {
       log "ready: $(state_get '.live_number')"
       return 0
     fi
-    if [[ "$(state_get '.login')" == "confirmed" && "$(state_get '.calendar')" == "confirmed" && "$(state_get '.activation')" == "complete" ]]; then
+    if [[ "$PREFLIGHT_CONFIRMED_THIS_RUN" == "1" && "$(state_get '.login')" == "confirmed" && "$(state_get '.calendar')" == "confirmed" && "$(state_get '.activation')" == "complete" ]]; then
       author_start_and_verify
       return $?
     fi
     attempt=$((attempt + 1))
     run_preflight_once || true
-    if [[ "$(state_get '.login')" == "confirmed" && "$(state_get '.calendar')" == "confirmed" && "$(state_get '.activation')" == "complete" ]]; then
+    if [[ "$PREFLIGHT_CONFIRMED_THIS_RUN" == "1" && "$(state_get '.login')" == "confirmed" && "$(state_get '.calendar')" == "confirmed" && "$(state_get '.activation')" == "complete" ]]; then
       author_start_and_verify
       return $?
     fi
@@ -536,6 +607,8 @@ run_build_while_away() {
 
 main() {
   local elapsed0 t1 t2 url answer
+  INSTALL_RUN_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/domo-install-run.XXXXXX")"
+  trap 'rm -rf "$INSTALL_RUN_TMP_DIR"' EXIT
   elapsed0="$SECONDS"
   check_tooling
   t1="$(date +%s)"
@@ -567,7 +640,21 @@ main() {
   if ! state_activation_complete; then
     set_state_message "Activating Plow chat."
     push_dashboard_from_state
-    "$DOMO" activate
+    local activate_rc_file activate_rc
+    activate_rc_file="$INSTALL_RUN_TMP_DIR/activate.rc"
+    (
+      set +e
+      DOMO_DASHBOARD_MIRROR_STATE=1 "$DOMO" activate
+      printf '%s\n' "$?" > "$activate_rc_file"
+    ) &
+    local activate_pid=$!
+    while [[ ! -f "$activate_rc_file" ]]; do
+      push_dashboard_from_state
+      sleep 1
+    done
+    wait "$activate_pid" || true
+    activate_rc="$(cat "$activate_rc_file")"
+    [[ "$activate_rc" -eq 0 ]] || return "$activate_rc"
     push_dashboard_from_state
   else
     log "activation: complete (from persisted state)"

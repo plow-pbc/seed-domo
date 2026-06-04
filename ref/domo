@@ -130,6 +130,7 @@ export_config_dir() {
 # verification panel) appears on the page automatically when the agent runs the
 # normal commands, instead of relying on the agent to remember to push it.
 _dash() {
+  [[ "${DOMO_DASHBOARD_MIRROR_STATE:-0}" == "1" ]] && return 0
   local client="$SCRIPT_DIR/installer/client.sh"
   [[ -f "$client" ]] || return 0
   local sdir="${INSTALLER_STATE_DIR:-${DOMO_INSTALLER_STATE_DIR:-${TMPDIR:-/tmp}/installer-ui}}"
@@ -525,7 +526,9 @@ persist_solo_activation_detail() {
     const fs = require("fs");
     const [out, responseFile] = process.argv.slice(1);
     let state = {};
-    try { state = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8")); } catch {}
+    if (fs.existsSync(process.env.INSTALL_STATE_FILE)) {
+      state = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8"));
+    }
     const a = JSON.parse(fs.readFileSync(responseFile, "utf8"));
     state.interview = state.interview && typeof state.interview === "object"
       ? { ...state.interview, status: state.interview.status ?? (state.interview.mode ? "collected" : "pending"), members: state.interview.members ?? [] }
@@ -543,6 +546,47 @@ persist_solo_activation_detail() {
       display_code: a.display_code,
       send_to: a.send_to,
       line_uid: a.line_id ?? a.line_uid ?? null,
+    };
+    fs.writeFileSync(out, JSON.stringify(state, null, 2) + "\n");
+  ' "$tmp" "$response_file"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$INSTALL_STATE_FILE"
+  rm -f "$response_file"
+}
+
+persist_group_owner_activation_detail() {
+  local response="$1" status="${2:-pending}"
+  local response_file tmp
+  response_file="$(umask 077; mktemp "${TMPDIR:-/tmp}/domo-group-owner.XXXXXX")"
+  printf '%s' "$response" > "$response_file"
+  tmp="$(umask 077; mktemp "$DOMO_HOME/.install-state.json.XXXXXX")"
+  INSTALL_STATE_FILE="$INSTALL_STATE_FILE" BASE_URL="$PLOW_BASE_URL" STATUS="$status" bun -e '
+    const fs = require("fs");
+    const [out, responseFile] = process.argv.slice(1);
+    let state = {};
+    if (fs.existsSync(process.env.INSTALL_STATE_FILE)) {
+      state = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8"));
+    }
+    const owner = JSON.parse(fs.readFileSync(responseFile, "utf8"));
+    state.interview = state.interview && typeof state.interview === "object"
+      ? { ...state.interview, status: state.interview.status ?? (state.interview.mode ? "collected" : "pending"), members: state.interview.members ?? [] }
+      : { status: "pending", members: [] };
+    state.activation = state.activation || "pending";
+    state.login = state.login || "pending";
+    state.calendar = state.calendar || "pending";
+    state.build = state.build || "pending";
+    state.ready = state.ready || false;
+    state.activation_detail = {
+      ...(state.activation_detail || {}),
+      mode: "group",
+      base_url: process.env.BASE_URL.replace(/\/$/, ""),
+      owner: {
+        status: process.env.STATUS,
+        activation_secret: owner.activation_secret,
+        display_code: owner.display_code,
+        send_to: owner.send_to,
+        line_uid: owner.line_id ?? owner.line_uid ?? null,
+      },
     };
     fs.writeFileSync(out, JSON.stringify(state, null, 2) + "\n");
   ' "$tmp" "$response_file"
@@ -610,7 +654,9 @@ set_install_activation_status() {
     const fs = require("fs");
     const out = process.argv.slice(1)[0];
     let prev = {};
-    try { prev = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8")); } catch {}
+    if (fs.existsSync(process.env.INSTALL_STATE_FILE)) {
+      prev = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8"));
+    }
     prev.interview = prev.interview && typeof prev.interview === "object"
       ? { ...prev.interview, status: prev.interview.status ?? (prev.interview.mode ? "collected" : "pending"), members: prev.interview.members ?? [] }
       : { status: "pending", members: [] };
@@ -759,7 +805,9 @@ persist_group_activation_detail() {
     const fs = require("fs");
     const [out, ownerFile, lineFile, chatFile] = process.argv.slice(1);
     let state = {};
-    try { state = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8")); } catch {}
+    if (fs.existsSync(process.env.INSTALL_STATE_FILE)) {
+      state = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8"));
+    }
     state.interview = state.interview && typeof state.interview === "object"
       ? { ...state.interview, status: state.interview.status ?? (state.interview.mode ? "collected" : "pending"), members: state.interview.members ?? [] }
       : { status: "pending", members: [] };
@@ -1037,6 +1085,7 @@ start_group_activation() {
   [[ -n "$activation_secret" ]] || die "activation response missing activation_secret."
   [[ -n "$display_code" && -n "$send_to" ]] || die "activation response missing display_code/send_to."
   write_activation_state_file "$response"
+  persist_group_owner_activation_detail "$response" pending
 
   cat >&2 <<EOF
 
@@ -1057,6 +1106,7 @@ EOF
   redeem="$(poll_activation_redeem "$activation_secret")" || return 1
   token="$(printf '%s' "$redeem" | json_value token)"
   [[ -n "$token" ]] || die "verified redeem response had no token."
+  persist_group_owner_activation_detail "$response" verified
   push_activation_dashboard_row "Owner" verified "$display_code" "$send_to" true owner
 
   line_json="$(plow_get_primary_line "$token")"
