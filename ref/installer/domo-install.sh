@@ -80,13 +80,56 @@ open_dashboard() {
 }
 
 push_waiting_for_interview() {
-  "$CLIENT" installer_reset "Setting up Domo"
-  "$CLIENT" installer_set kicker "Preparing Domo"
-  "$CLIENT" installer_set subtitle "The dashboard is ready. Answer the terminal question so setup can continue."
-  "$CLIENT" installer_set message "$BANNER"
-  "$CLIENT" installer_step tooling ok "Tooling check passed"
-  "$CLIENT" installer_step setup ok "Domo shell prepared"
-  "$CLIENT" installer_step interview waiting "$PROMPT" terminal
+  local login_command="$DOMO login"
+  local state
+  state="$(jq -n \
+    --arg banner "$BANNER" \
+    --arg prompt "$PROMPT" \
+    --arg loginCommand "$login_command" \
+    '{
+      title: "Setting up Domo",
+      kicker: "Preparing Domo",
+      subtitle: "The dashboard is ready. Answer the terminal question so setup can continue.",
+      message: $banner,
+      done: false,
+      steps: [
+        { id: "tooling", status: "ok", label: "Tooling check passed" },
+        { id: "setup", status: "ok", label: "Domo shell prepared" },
+        {
+          id: "interview",
+          status: "waiting",
+          label: $prompt,
+          action: {
+            instruction: $prompt,
+            where: "terminal"
+          }
+        },
+        {
+          id: "login",
+          status: "waiting",
+          label: "Sign in to Claude",
+          detail: "Waiting — finish domo login in your new terminal. This checks off only after preflight confirms it.",
+          action: {
+            instruction: "Open a NEW terminal, paste this command, and complete the Claude browser login there.",
+            where: "terminal",
+            command: $loginCommand
+          }
+        },
+        {
+          id: "calendar",
+          status: "waiting",
+          label: "Enable Google Calendar",
+          detail: "Best-effort optimistic state — the installer will confirm the calendar tools inside the logged-in Domo session.",
+          action: {
+            instruction: "Connect Google Calendar on the same Anthropic account you use for domo login.",
+            where: "browser",
+            link: "https://claude.ai/customize/connectors"
+          }
+        }
+      ]
+    }')"
+  printf '%s\n' "$state" > "$INSTALLER_STATE_DIR/state.json"
+  "$CLIENT" installer_push "$state" >/dev/null
 }
 
 mark_interview_collected() {

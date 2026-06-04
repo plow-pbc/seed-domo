@@ -575,6 +575,16 @@
       row.appendChild(codeWrap);
     }
 
+    if (status !== "verified" && m.number) {
+      var numberWrap = el("div", { class: "number" });
+      numberWrap.appendChild(el("span", { class: "number-label", text: "to" }));
+      numberWrap.appendChild(el("span", { class: "phone", text: m.number }));
+      var ncp = el("button", { class: "cp number-copy", attrs: { type: "button" }, text: "⧉ Copy" });
+      ncp.addEventListener("click", function () { copyToClipboard(m.number, ncp, "✓"); });
+      numberWrap.appendChild(ncp);
+      row.appendChild(numberWrap);
+    }
+
     // status indicator
     var st;
     if (status === "verified") {
