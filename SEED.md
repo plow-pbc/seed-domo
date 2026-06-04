@@ -65,6 +65,13 @@ missing dependency it cannot resolve.
 - **The Plow Chat channel** - `ref/channels/plow-chat`, an MCP stdio server with
   the `claude/channel` capability. It reads `PLOW_CHAT_STATE`; it MUST NOT
   hardcode secrets and MUST NOT log the Bearer token.
+- **The install dashboard** - `ref/installer/`, a display-only local monitor
+  served from `127.0.0.1`. The dashboard is a soft gate and a user-facing status
+  surface only: it has no forms, accepts no install input from the user, and MUST
+  NOT drive orchestration. The installing agent owns all dashboard state updates
+  through `ref/installer/client.sh`. The dashboard state MUST NOT contain
+  secrets; it MAY show public user-action data such as the login command,
+  Calendar connector URL, Plow activation code, and Plow target number.
 
 ## Actions
 
@@ -81,6 +88,39 @@ export DOMO_HOME=/path/to/one/isolated/domo-home
 ```
 
 All commands below MUST use that same `DOMO_HOME`.
+
+**Phase 0 - Display-only dashboard.**
+
+The agent SHOULD launch the dashboard when a browser is available. This is a
+soft gate: if the server, browser, or open command is unavailable, the install
+continues in the agent chat and terminal with the same piece commands.
+
+The dashboard is the user's primary simple progress monitor and copy-paste
+surface. It is display-only; the user does not click dashboard controls to drive
+install progress. The user acts in their terminal, browser, and phone.
+
+The agent initializes one dashboard state directory scoped to `DOMO_HOME`:
+
+```bash
+export INSTALLER_STATE_DIR="$DOMO_HOME/installer-ui"
+INSTALLER_NO_OPEN=1 ref/installer/start.sh
+ref/installer/client.sh installer_reset "Setting up Domo"
+ref/installer/client.sh installer_set subtitle "Follow the current action below. This page updates automatically."
+ref/installer/client.sh installer_step login pending "Sign in to Claude"
+ref/installer/client.sh installer_step calendar pending "Connect Google Calendar"
+ref/installer/client.sh installer_step activate pending "Activate Domo by text"
+ref/installer/client.sh installer_step ready pending "Start Domo"
+```
+
+If a browser can be opened, the agent opens the local dashboard URL:
+
+```bash
+open "$(ref/installer/client.sh installer_url)"
+```
+
+If no browser is available, the agent prints the same progress in terminal/chat
+and continues. The dashboard server is a monitor only; failure to launch it MUST
+NOT block the four verified pieces.
 
 **Step 1 - Login.**
 
@@ -102,6 +142,19 @@ Who runs what:
 Done when the status output reports `CONFIRMED`. If status is not confirmed, the
 agent waits and retries. The agent MUST NOT ask for, print, or copy Claude auth
 tokens.
+
+Dashboard updates:
+
+```bash
+ref/installer/client.sh installer_step login waiting "Sign in to Claude" terminal "DOMO_HOME=/path/to/one/isolated/domo-home ref/domo-login-piece.sh login"
+```
+
+When confirmed:
+
+```bash
+ref/installer/client.sh installer_step login ok "Signed in to Claude"
+ref/installer/client.sh installer_step calendar active "Checking Google Calendar"
+```
 
 **Step 2 - Calendar.**
 
@@ -130,6 +183,27 @@ Who runs what:
 Done when the calendar piece reports `CONNECTED`. The agent MUST keep retrying
 the probe after user action; it MUST NOT mark Calendar complete from user
 assertion alone.
+
+Dashboard updates:
+
+Before probing:
+
+```bash
+ref/installer/client.sh installer_step calendar active "Checking Google Calendar"
+```
+
+If the probe reports `NOT_CONNECTED`, show exactly one browser action:
+
+```bash
+ref/installer/client.sh installer_step calendar waiting "Connect Google Calendar" browser "https://claude.ai/customize/connectors"
+```
+
+When connected:
+
+```bash
+ref/installer/client.sh installer_step calendar ok "Google Calendar connected"
+ref/installer/client.sh installer_step activate active "Preparing text activation"
+```
 
 **Step 3 - Solo Plow activation.**
 
@@ -160,6 +234,35 @@ Done when the activation piece reports `VERIFIED` and the state file is present,
 chmod 600, and strictly shaped as `{base_url, token, chat_uid}`. The agent MUST
 never print the token.
 
+Dashboard updates:
+
+While requesting activation:
+
+```bash
+ref/installer/client.sh installer_step activate active "Preparing text activation"
+```
+
+After the agent parses the activation `CODE` and `NUMBER` from the activation
+piece output, it relays them to the user in chat and pushes the same public
+copy-paste data to the dashboard:
+
+```bash
+ref/installer/client.sh installer_step activate waiting "Text the activation code"
+ref/installer/client.sh installer_verify "You" pending "CODE" "NUMBER" self
+```
+
+The dashboard MUST NOT receive activation secrets or the Plow Bearer token. It
+MAY receive only the public one-time activation code and target number that the
+user must text.
+
+When verified:
+
+```bash
+ref/installer/client.sh installer_verify "You" verified "" "" self
+ref/installer/client.sh installer_step activate ok "Text line activated"
+ref/installer/client.sh installer_step ready active "Starting Domo"
+```
+
 **Step 4 - Ready.**
 
 Who runs what:
@@ -176,6 +279,21 @@ ready text through the real Plow `reply` path.
 
 Done when the ready piece reports the ready text was sent. The user should then
 receive Domo's first text on the phone used in Step 3.
+
+Dashboard updates:
+
+Before running the ready piece:
+
+```bash
+ref/installer/client.sh installer_step ready active "Starting Domo"
+```
+
+When the ready text is sent:
+
+```bash
+ref/installer/client.sh installer_step ready ok "Domo is running"
+ref/installer/client.sh installer_done "Domo is live - check your phone for the ready text."
+```
 
 ### Domo is activated
 
