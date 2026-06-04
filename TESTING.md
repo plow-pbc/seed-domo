@@ -68,8 +68,8 @@ sequence.
 
 4. Confirm the login and Calendar rows appear immediately:
 
-   - login row shows the exact `domo login` command and says to run it in a new
-     terminal;
+   - login row shows the exact resolved `$DOMO login` command (default
+     `ref/domo login`) and says to run it in a new terminal;
    - Calendar row links to `https://claude.ai/customize/connectors`.
 
 5. Answer the terminal question:
@@ -98,7 +98,7 @@ sequence.
 9. Confirm the ready state shows:
 
    ```text
-   Domo is live - text <number> to talk to it.
+   Domo is live — text <number> to talk to it.
    ```
 
 10. Confirm the terminal reports success and `ref/domo status` shows the daemon
