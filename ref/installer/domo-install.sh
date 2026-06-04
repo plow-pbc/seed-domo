@@ -19,10 +19,11 @@ DOMO_META_FILE="$DOMO_HOME/.claude/domo.json"
 DOMO_WORKSPACE="$DOMO_HOME/workspace"
 DOMO_WORKSPACE_SLUG="$(printf '%s' "$DOMO_WORKSPACE" | sed 's/[\/.]/-/g')"
 DOMO_PROJECTS_DIR="$DOMO_HOME/.claude/projects/$DOMO_WORKSPACE_SLUG"
-PREFLIGHT_INTERVAL_SECONDS="${DOMO_PREFLIGHT_INTERVAL_SECONDS:-5}"
-PREFLIGHT_MAX_ATTEMPTS="${DOMO_PREFLIGHT_MAX_ATTEMPTS:-0}"
-CALENDAR_PROBE_TIMEOUT_SECONDS="${DOMO_CALENDAR_PROBE_TIMEOUT_SECONDS:-45}"
-CALENDAR_ESCALATE_SECONDS="${DOMO_CALENDAR_ESCALATE_SECONDS:-120}"
+DOMO_INSTALL_TEST_MODE="${DOMO_INSTALL_TEST_MODE:-0}"
+PREFLIGHT_INTERVAL_SECONDS=5
+PREFLIGHT_MAX_ATTEMPTS=0
+CALENDAR_PROBE_TIMEOUT_SECONDS=45
+CALENDAR_ESCALATE_SECONDS=120
 PREFLIGHT_CONFIRMED_THIS_RUN=0
 INSTALL_RUN_TMP_DIR=""
 TERMINAL_FALLBACK=0
@@ -36,6 +37,26 @@ fail_tool() { printf 'missing required tool: %s\n' "$1" >&2; exit 1; }
 
 need_tool() {
   command -v "$1" >/dev/null 2>&1 || fail_tool "$1"
+}
+
+int_at_least() {
+  local raw="$1" default="$2" floor="$3"
+  [[ "$raw" =~ ^[0-9]+$ ]] || { printf '%s' "$default"; return 0; }
+  if [[ "$raw" -lt "$floor" ]]; then printf '%s' "$floor"; else printf '%s' "$raw"; fi
+}
+
+int_or_default() {
+  local raw="$1" default="$2"
+  [[ "$raw" =~ ^[0-9]+$ ]] && printf '%s' "$raw" || printf '%s' "$default"
+}
+
+apply_env_policy() {
+  if [[ "$DOMO_INSTALL_TEST_MODE" == "1" ]]; then
+    PREFLIGHT_INTERVAL_SECONDS="$(int_at_least "${DOMO_PREFLIGHT_INTERVAL_SECONDS:-5}" 5 1)"
+    PREFLIGHT_MAX_ATTEMPTS="$(int_or_default "${DOMO_PREFLIGHT_MAX_ATTEMPTS:-0}" 0)"
+    CALENDAR_PROBE_TIMEOUT_SECONDS="$(int_at_least "${DOMO_CALENDAR_PROBE_TIMEOUT_SECONDS:-45}" 45 5)"
+    CALENDAR_ESCALATE_SECONDS="$(int_at_least "${DOMO_CALENDAR_ESCALATE_SECONDS:-120}" 120 5)"
+  fi
 }
 
 version_ge() {
@@ -504,11 +525,11 @@ calendar_tool_result_confirmed() {
 }
 
 probe_calendar_in_session() {
-  if [[ -n "${DOMO_PREFLIGHT_CALENDAR_CMD:-}" && "${DOMO_TEST_ALLOW_FAKE_CALENDAR_PROBE:-0}" == "1" ]]; then
+  if [[ -n "${DOMO_PREFLIGHT_CALENDAR_CMD:-}" && "$DOMO_INSTALL_TEST_MODE" == "1" ]]; then
     bash -c "$DOMO_PREFLIGHT_CALENDAR_CMD"
     return $?
   elif [[ -n "${DOMO_PREFLIGHT_CALENDAR_CMD:-}" ]]; then
-    log "ignoring DOMO_PREFLIGHT_CALENDAR_CMD because DOMO_TEST_ALLOW_FAKE_CALENDAR_PROBE is not set"
+    log "ignoring DOMO_PREFLIGHT_CALENDAR_CMD because DOMO_INSTALL_TEST_MODE is not set"
   fi
 
   local sid transcript offset out err rc
@@ -674,6 +695,7 @@ run_build_while_away() {
 
 main() {
   local elapsed0 t1 t2 url answer
+  apply_env_policy
   INSTALL_RUN_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/domo-install-run.XXXXXX")"
   trap 'rm -rf "$INSTALL_RUN_TMP_DIR"' EXIT
   elapsed0="$SECONDS"

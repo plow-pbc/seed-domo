@@ -74,9 +74,11 @@ PLOW_ACTIVATION_FILE="$PLOW_DIR/activation.json" # transient pre-token secret
 PLOW_CHANNEL_DIR="$SCRIPT_DIR/channels/plow-chat" # channel server dir (registered as an MCP server)
 PLOW_BASE_URL="${PLOW_CHAT_BASE_URL:-https://api.plow.co}"
 SPAWN_CONFIRM="$SCRIPT_DIR/bin/spawn-confirm.expect" # drives the dev-channels confirmation for `start`
-ACTIVATION_TIMEOUT_SECONDS="${DOMO_ACTIVATION_TIMEOUT_SECONDS:-300}"
-ACTIVATION_POLL_INTERVAL_SECONDS="${DOMO_ACTIVATION_POLL_INTERVAL_SECONDS:-3}"
-ACTIVATION_MAX_RESENDS="${DOMO_ACTIVATION_MAX_RESENDS:-0}"
+DOMO_INSTALL_TEST_MODE="${DOMO_INSTALL_TEST_MODE:-0}"
+ACTIVATION_TIMEOUT_SECONDS=300
+ACTIVATION_POLL_INTERVAL_SECONDS=3
+ACTIVATION_MAX_RESENDS=0
+WS_TIMEOUT_MS=300000
 
 # --- fakechat (marketplace) config, carried from run.sh ---
 MARKETPLACE_SRC="anthropics/claude-plugins-official"
@@ -99,6 +101,26 @@ PROJECTS_DIR="$CONFIG_DIR/projects/$WORKSPACE_SLUG"
 log()  { printf '[domo] %s\n' "$*" >&2; }
 warn() { printf '[domo] WARNING: %s\n' "$*" >&2; }
 die()  { printf '[domo] ERROR: %s\n' "$*" >&2; exit 1; }
+
+int_at_least() {
+  local raw="$1" default="$2" floor="$3"
+  [[ "$raw" =~ ^[0-9]+$ ]] || { printf '%s' "$default"; return 0; }
+  if [[ "$raw" -lt "$floor" ]]; then printf '%s' "$floor"; else printf '%s' "$raw"; fi
+}
+
+int_or_default() {
+  local raw="$1" default="$2"
+  [[ "$raw" =~ ^[0-9]+$ ]] && printf '%s' "$raw" || printf '%s' "$default"
+}
+
+apply_env_policy() {
+  if [[ "$DOMO_INSTALL_TEST_MODE" == "1" ]]; then
+    ACTIVATION_TIMEOUT_SECONDS="$(int_at_least "${DOMO_ACTIVATION_TIMEOUT_SECONDS:-300}" 300 5)"
+    ACTIVATION_POLL_INTERVAL_SECONDS="$(int_at_least "${DOMO_ACTIVATION_POLL_INTERVAL_SECONDS:-3}" 3 1)"
+    ACTIVATION_MAX_RESENDS="$(int_or_default "${DOMO_ACTIVATION_MAX_RESENDS:-0}" 0)"
+    WS_TIMEOUT_MS="$(int_at_least "${DOMO_WS_TIMEOUT_MS:-300000}" 300000 1000)"
+  fi
+}
 
 # strip_ansi — filter stdin->stdout, removing the ANSI/control noise the claude
 # TUI writes into domo.log (CSI/OSC/DCS escapes, charset designators, carriage
@@ -1082,7 +1104,7 @@ ws_url_for_ticket() {
 
 plow_ws_listen_once() {
   local ws_url="$1"
-  WS_URL="$ws_url" bun -e '
+  WS_URL="$ws_url" DOMO_WS_TIMEOUT_MS="$WS_TIMEOUT_MS" bun -e '
     const ws = new WebSocket(process.env.WS_URL);
     let sawActive = false;
     let opened = false;
@@ -1861,6 +1883,7 @@ EOF
 }
 
 main() {
+  apply_env_policy
   local cmd="${1:-}"
   case "$cmd" in
     setup)    shift; cmd_setup "$@" ;;
