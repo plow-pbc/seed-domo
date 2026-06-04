@@ -33,8 +33,12 @@ else
 fi
 
 # Open the user's browser (macOS `open`; otherwise print the URL to share).
-if command -v open >/dev/null 2>&1; then open "$URL" >/dev/null 2>&1 || true
-else echo "Open this in your browser: $URL"; fi
+# Drivers can set INSTALLER_NO_OPEN=1 when they need to push initial state before
+# first paint, then open the URL themselves.
+if [ "${INSTALLER_NO_OPEN:-0}" != "1" ]; then
+  if command -v open >/dev/null 2>&1; then open "$URL" >/dev/null 2>&1 || true
+  else echo "Open this in your browser: $URL"; fi
+fi
 
 cat <<EOF
 Drive it with one-liners (no JSON needed):

@@ -29,6 +29,9 @@
 # the seed-install contract recommends authors gitignore it so reruns don't churn.
 /install-report.json
 
+# Domo install state contains household interview answers and later install secrets.
+/install-state.json
+
 # Channel build artifacts (the bun server installs deps at launch).
 /ref/channels/plow-chat/node_modules/
 /ref/channels/plow-chat/bun.lock
