@@ -2,12 +2,10 @@
 /**
  * Plow Chat channel for Claude Code / Domo.
  *
- * Models the fakechat channel contract EXACTLY, swapping only the transport:
- * instead of a localhost web UI, this is a Plow Chat WebSocket client + REST
- * sender. There is NO listening server here (no port to bind), so nothing to
- * conflict with FAKECHAT_PORT.
+ * Claude channel MCP server backed by a Plow Chat WebSocket client + REST
+ * sender. There is NO listening server here.
  *
- * Channel contract (identical wiring to fakechat):
+ * Channel contract:
  *   - capabilities: { tools: {}, experimental: { 'claude/channel': {} } }
  *   - instructions string telling Claude to reply via the `reply` tool and that
  *     inbound arrives as <channel source="plow-chat" ...> events.
@@ -24,7 +22,6 @@
  *   Backfill GET /v1/chats/{uid}/messages                          -> [..messages..]
  *
  * Secrets come from a chmod-600 state file whose path is in PLOW_CHAT_STATE
- * (mirrors how fakechat receives FAKECHAT_PORT). The server NEVER hardcodes the
  * path and NEVER logs the token. If state is missing/unparseable, the server
  * still starts the stdio transport (so `claude --channels` loads cleanly) but
  * stays unconnected and `reply` returns isError until state appears. It MUST NOT
@@ -90,7 +87,7 @@ function wsBase(base_url: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// MCP server — capability marker + instructions mirror fakechat exactly.
+// MCP server — capability marker + channel instructions.
 // ---------------------------------------------------------------------------
 
 const mcp = new Server(
@@ -178,7 +175,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 await mcp.connect(new StdioServerTransport())
 
 // ---------------------------------------------------------------------------
-// INBOUND: deliver a channel notification exactly like fakechat's deliver().
+// INBOUND: deliver a channel notification to Claude.
 // ---------------------------------------------------------------------------
 
 function deliver(content: string, meta: { chat_id: string; message_id: string; user: string; ts: string; provider_key?: string }): void {

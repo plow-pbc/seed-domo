@@ -23,8 +23,6 @@ keep it small.
 - `client.sh` — shell helper. Low-level (`installer_push '<state>'`) **and** a
   one-liner **verb layer** that keeps cumulative state in a file so a driver updates
   one thing at a time (see *Driving it*).
-- `demo.sh` — a self-contained happy-path driver used to validate the installer
-  end-to-end (drives all phases; Plow steps hit a configurable base URL).
 
 ## Running
 

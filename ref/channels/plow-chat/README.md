@@ -1,12 +1,11 @@
 # plow-chat
 
 A Claude Code **channel** that bridges a real Plow Chat (SMS / texting)
-conversation to a Claude Code session. Modeled on the `fakechat` channel
-contract — same MCP/channel wiring — but the transport is the Plow Chat
-WebSocket + REST API instead of a localhost web UI.
+conversation to a Claude Code session. It uses the Claude channel MCP contract
+with the Plow Chat WebSocket + REST API as transport.
 
 There is **no listening server** here: the channel is a WSS *client* plus a REST
-sender. Nothing binds a port, so it never conflicts with `FAKECHAT_PORT`.
+sender. Nothing binds a port.
 
 ## How it loads
 
@@ -16,15 +15,15 @@ Loaded as a local plugin dir by the `domo` CLI (not a marketplace install):
 claude --channels plugin:plow-chat --plugin-dir /Users/plucas/cncorp/seed-domo/channels/plow-chat
 ```
 
-`.mcp.json` launches the server with `bun` exactly like fakechat. The
-`start` script runs `bun install --no-summary && bun server.ts`.
+`.mcp.json` launches the server with `bun`. The `start` script runs
+`bun install --no-summary && bun server.ts`.
 
 ## Secrets — never committed
 
 The server reads `{ base_url, token, chat_uid }` from a **chmod-600** JSON state
 file. It does **not** hardcode the path: it reads `process.env.PLOW_CHAT_STATE`
-(an absolute path), mirroring how fakechat receives `FAKECHAT_PORT`. The `domo`
-CLI exports `PLOW_CHAT_STATE` before launching `claude`.
+(an absolute path). The `domo` CLI exports `PLOW_CHAT_STATE` before launching
+`claude`.
 
 State file shape (written by `./domo activate`):
 
