@@ -1568,6 +1568,7 @@ cmd_status() {
   log "permission mode: $PERMISSION_MODE"
   case "$DOMO_CHANNEL" in
     plow-chat) log "channel flag:    --dangerously-load-development-channels server:plow-chat"; log "channel dir:     $PLOW_CHANNEL_DIR" ;;
+    *) die "unknown DOMO_CHANNEL='$DOMO_CHANNEL' (expected plow-chat)." ;;
   esac
 
   # Session jsonl present? (first-run vs resume.)
@@ -1604,6 +1605,7 @@ cmd_status() {
         warn "plow-chat state: missing — run './domo activate'"; ok=1
       fi
       ;;
+    *) die "unknown DOMO_CHANNEL='$DOMO_CHANNEL' (expected plow-chat)." ;;
   esac
 
   if [[ "$assert" -eq 1 && "$ok" -ne 0 ]]; then
@@ -1781,6 +1783,7 @@ cmd_doctor() {
         warn "WARN plow-chat state.json has no token — run './domo activate'"
       fi
       ;;
+    *) die "unknown DOMO_CHANNEL='$DOMO_CHANNEL' (expected plow-chat)." ;;
   esac
 
   if [[ "$ok" -eq 0 ]]; then log "doctor: all checks passed."; else die "doctor: one or more checks failed (see WARNINGs)."; fi
