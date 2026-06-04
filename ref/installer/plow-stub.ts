@@ -1,4 +1,9 @@
-// Plow activation/group-chat stub for install-UX repros.
+// Plow activation/group-chat stub for install-UX E2E repros.
+//
+// Run:
+//   PLOW_STUB_STATE_DIR=/tmp/domo-plow-stub bun run ref/installer/plow-stub.ts
+//   base_url="$(jq -r .base_url /tmp/domo-plow-stub/server-info)"
+//   PLOW_CHAT_BASE_URL="$base_url" ref/installer/domo-install.sh
 //
 // Covered Plow endpoints:
 //   POST /v1/auth/activate
@@ -9,10 +14,15 @@
 //   POST /v1/ws/ticket
 //   GET  /v1/ws?ticket=...
 //
+// WSS behavior:
+//   - each accepted /v1/ws connection immediately sends {"type":"connected"}
+//   - POST /_stub/text with a member VERIFY code emits participant_verified
+//   - after the final member verifies, the socket emits chat_active
+//
 // Test-only helpers:
-//   POST /_stub/text       {"text":"<exact activation or VERIFY code>"}
+//   POST /_stub/text       {"text":"<exact activation or VERIFY code>","from":"+1555..."}
 //   POST /_stub/config     {"ws_close_on_open":true|false,"response_delay_ms":0}
-//   GET  /_stub/calls      call counters for restart/resume evidence
+//   GET  /_stub/calls      counters plus ordered Plow API sequence
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -52,6 +62,11 @@ type Chat = {
   created_at: string;
 };
 
+type CallRecord = {
+  method: string;
+  path: string;
+};
+
 const line = {
   object: "line",
   uid: "ln_stub_000001",
@@ -67,10 +82,23 @@ const verificationCodes = new Map<string, { chatUid: string; participantUid: str
 const tickets = new Map<string, string>();
 const sockets = new Set<any>();
 
-const calls = { activate: 0, redeem: 0, lines: 0, chats: 0, resend: 0, ws_ticket: 0 };
+const calls: {
+  activate: number;
+  redeem: number;
+  lines: number;
+  chats: number;
+  resend: number;
+  ws_ticket: number;
+  ws_connect: number;
+  sequence: CallRecord[];
+} = { activate: 0, redeem: 0, lines: 0, chats: 0, resend: 0, ws_ticket: 0, ws_connect: 0, sequence: [] };
 let wsCloseOnOpen = process.env.PLOW_STUB_WS_CLOSE_ON_OPEN === "1";
 let redeemErrorStatus = 0;
 let responseDelayMs = 0;
+
+function record(method: string, path: string): void {
+  calls.sequence.push({ method, path });
+}
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -135,6 +163,7 @@ function activationResponse(activation: Activation): Record<string, unknown> {
 
 function createActivation(body: Record<string, unknown>): Response {
   calls.activate++;
+  record("POST", "/v1/auth/activate");
   if (typeof body.name !== "string" || body.name.trim() === "") {
     return error(400, "name is required");
   }
@@ -158,6 +187,7 @@ function createActivation(body: Record<string, unknown>): Response {
 
 function redeemActivation(body: Record<string, unknown>): Response {
   calls.redeem++;
+  record("POST", "/v1/auth/activate/redeem");
   if (redeemErrorStatus) return error(redeemErrorStatus, "simulated redeem failure");
   if (typeof body.activation_secret !== "string" || body.activation_secret.trim() === "") {
     return error(400, "activation_secret is required");
@@ -175,6 +205,7 @@ function redeemActivation(body: Record<string, unknown>): Response {
 
 function listLines(req: Request): Response {
   calls.lines++;
+  record("GET", "/v1/lines");
   const auth = requireToken(req);
   if (auth instanceof Response) return auth;
   return json({ object: "list", data: [line], has_more: false, url: "/v1/lines" });
@@ -182,6 +213,7 @@ function listLines(req: Request): Response {
 
 function createChat(req: Request, body: Record<string, unknown>): Response {
   calls.chats++;
+  record("POST", "/v1/chats");
   const auth = requireToken(req);
   if (auth instanceof Response) return auth;
   const participants = body.participants;
@@ -233,6 +265,7 @@ function createChat(req: Request, body: Record<string, unknown>): Response {
 
 function resendInvitation(req: Request, chatUid: string, participantUid: string): Response {
   calls.resend++;
+  record("POST", `/v1/chats/${chatUid}/invitations/${participantUid}/resend`);
   const auth = requireToken(req);
   if (auth instanceof Response) return auth;
   const chat = chats.get(chatUid);
@@ -249,6 +282,7 @@ function resendInvitation(req: Request, chatUid: string, participantUid: string)
 
 function mintTicket(req: Request, body: Record<string, unknown>): Response {
   calls.ws_ticket++;
+  record("POST", "/v1/ws/ticket");
   const auth = requireToken(req);
   if (auth instanceof Response) return auth;
   if (typeof body.chat_id !== "string" || body.chat_id.trim() === "") {
@@ -359,6 +393,8 @@ const server = Bun.serve({
       return mintTicket(req, body);
     }
     if (pathname === "/v1/ws" && req.method === "GET") {
+      calls.ws_connect++;
+      record("GET", "/v1/ws");
       const ticket = url.searchParams.get("ticket") || "";
       const chatUid = tickets.get(ticket);
       if (!chatUid) return error(401, "unknown or expired websocket ticket");

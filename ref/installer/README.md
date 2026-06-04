@@ -23,6 +23,12 @@ keep it small.
 - `client.sh` — shell helper. Low-level (`installer_push '<state>'`) **and** a
   one-liner **verb layer** that keeps cumulative state in a file so a driver updates
   one thing at a time (see *Driving it*).
+- `plow-stub.ts` — runnable Plow API/WSS fixture for install E2E. Covers solo
+  activation, group chat creation, member verification frames, and ordered call
+  recording.
+- `e2e-install.sh` — committed solo+group E2E runner. It enters through
+  `domo-install.sh`, points it at `plow-stub.ts`, and asserts ready state, call
+  order, daemon liveness, and chmod-600 channel state shape.
 
 ## Running
 
@@ -30,6 +36,64 @@ keep it small.
 ref/installer/start.sh                      # launch + open browser (the easy path)
 # or, by hand:
 bun run ref/installer/server.ts            # prints + writes server-info JSON, then serves
+```
+
+## Plow Stub Fixture
+
+The Plow stub is the deterministic replacement for live SMS/WSS in local and CI
+install tests.
+
+Run it:
+
+```bash
+PLOW_STUB_STATE_DIR=/tmp/domo-plow-stub bun run ref/installer/plow-stub.ts
+```
+
+It writes:
+
+```bash
+/tmp/domo-plow-stub/server-info
+```
+
+with:
+
+```json
+{ "base_url": "http://127.0.0.1:PORT", "port": PORT }
+```
+
+Point Domo activation at it:
+
+```bash
+base_url="$(jq -r .base_url /tmp/domo-plow-stub/server-info)"
+PLOW_CHAT_BASE_URL="$base_url" ref/installer/domo-install.sh
+```
+
+Covered Plow endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/v1/auth/activate` | Create owner/solo activation and return `display_code`, `send_to`, `activation_secret`. |
+| `POST` | `/v1/auth/activate/redeem` | Return `pending` until the exact activation code is posted to `/_stub/text`, then return token/chat. |
+| `GET` | `/v1/lines` | Return the stub agent line for group chat creation. |
+| `POST` | `/v1/chats` | Create a group chat with pending member participants and one-time `VERIFY-*` codes. |
+| `POST` | `/v1/chats/:chat/invitations/:participant/resend` | Re-issue a pending member verification code. |
+| `POST` | `/v1/ws/ticket` | Mint a WSS ticket for a known chat. |
+| `GET` | `/v1/ws?ticket=...` | WSS stream: emits `connected`, then `participant_verified` and `chat_active` as codes arrive. |
+
+Test helper endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/_stub/text` | Simulate a phone texting an exact activation or `VERIFY-*` code. |
+| `POST` | `/_stub/config` | Set `ws_close_on_open`, `redeem_error_status`, or `response_delay_ms`. |
+| `GET` | `/_stub/calls` | Return counters and ordered Plow API call sequence. |
+
+Run the committed E2E:
+
+```bash
+ref/installer/e2e-install.sh        # solo + group
+ref/installer/e2e-install.sh solo
+ref/installer/e2e-install.sh group
 ```
 
 ### Driving it (one-liners — no hand-built JSON)
