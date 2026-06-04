@@ -5,6 +5,7 @@
 //   POST /v1/auth/activate/redeem
 //   GET  /v1/lines
 //   POST /v1/chats
+//   POST /v1/chats/:chat/invitations/:participant/resend
 //   POST /v1/ws/ticket
 //   GET  /v1/ws?ticket=...
 //
@@ -66,7 +67,7 @@ const verificationCodes = new Map<string, { chatUid: string; participantUid: str
 const tickets = new Map<string, string>();
 const sockets = new Set<any>();
 
-const calls = { activate: 0, redeem: 0, lines: 0, chats: 0, ws_ticket: 0 };
+const calls = { activate: 0, redeem: 0, lines: 0, chats: 0, resend: 0, ws_ticket: 0 };
 let wsCloseOnOpen = process.env.PLOW_STUB_WS_CLOSE_ON_OPEN === "1";
 let redeemErrorStatus = 0;
 let responseDelayMs = 0;
@@ -230,6 +231,22 @@ function createChat(req: Request, body: Record<string, unknown>): Response {
   return json(chat, 201);
 }
 
+function resendInvitation(req: Request, chatUid: string, participantUid: string): Response {
+  calls.resend++;
+  const auth = requireToken(req);
+  if (auth instanceof Response) return auth;
+  const chat = chats.get(chatUid);
+  if (!chat) return error(404, "unknown chat");
+  const participant = chat.participants.find((p) => (p as any).uid === participantUid) as MemberParticipant | undefined;
+  if (!participant || participant.type !== "member") return error(404, "unknown participant");
+  if (participant.status === "active") return error(409, "participant already verified");
+  verificationCodes.delete(participant.verification_code);
+  participant.verification_code = code("VERIFY");
+  participant.verification_code_expires_at = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  verificationCodes.set(participant.verification_code, { chatUid, participantUid });
+  return json(participant);
+}
+
 function mintTicket(req: Request, body: Record<string, unknown>): Response {
   calls.ws_ticket++;
   const auth = requireToken(req);
@@ -331,6 +348,10 @@ const server = Bun.serve({
       } catch (err) {
         return error(400, err instanceof Error ? err.message : "invalid chat request");
       }
+    }
+    {
+      const resendMatch = pathname.match(/^\/v1\/chats\/([^/]+)\/invitations\/([^/]+)\/resend$/);
+      if (resendMatch && req.method === "POST") return resendInvitation(req, resendMatch[1], resendMatch[2]);
     }
     if (pathname === "/v1/ws/ticket" && req.method === "POST") {
       const body = await parseJson(req);

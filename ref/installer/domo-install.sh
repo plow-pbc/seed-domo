@@ -22,8 +22,10 @@ DOMO_PROJECTS_DIR="$DOMO_HOME/.claude/projects/$DOMO_WORKSPACE_SLUG"
 PREFLIGHT_INTERVAL_SECONDS="${DOMO_PREFLIGHT_INTERVAL_SECONDS:-5}"
 PREFLIGHT_MAX_ATTEMPTS="${DOMO_PREFLIGHT_MAX_ATTEMPTS:-0}"
 CALENDAR_PROBE_TIMEOUT_SECONDS="${DOMO_CALENDAR_PROBE_TIMEOUT_SECONDS:-45}"
+CALENDAR_ESCALATE_SECONDS="${DOMO_CALENDAR_ESCALATE_SECONDS:-120}"
 PREFLIGHT_CONFIRMED_THIS_RUN=0
 INSTALL_RUN_TMP_DIR=""
+TERMINAL_FALLBACK=0
 
 PROMPT="Solo or group? If group, who's in the household? (names — include yourself)"
 BANNER="One quick question is waiting in your terminal — answer it to continue."
@@ -83,11 +85,21 @@ dashboard_url() {
 
 open_dashboard() {
   local url="$1"
-  [ "${INSTALLER_NO_OPEN:-0}" = "1" ] && return 0
+  if [ "${INSTALLER_NO_OPEN:-0}" = "1" ]; then
+    TERMINAL_FALLBACK=1
+    terminal_surface_from_state
+    return 0
+  fi
   if command -v open >/dev/null 2>&1; then
-    open "$url" >/dev/null 2>&1 || true
+    if ! open "$url" >/dev/null 2>&1; then
+      TERMINAL_FALLBACK=1
+      printf 'Open this in your browser: %s\n' "$url"
+      terminal_surface_from_state
+    fi
   else
+    TERMINAL_FALLBACK=1
     printf 'Open this in your browser: %s\n' "$url"
+    terminal_surface_from_state
   fi
 }
 
@@ -147,6 +159,26 @@ set_state_bool() {
 set_state_message() {
   local message="$1"
   write_state_jq '.message=$message' --arg message "$message"
+}
+
+clear_calendar_pending_since() {
+  write_state_jq 'del(.calendar_pending_since)'
+}
+
+set_calendar_pending_message() {
+  local now message escalation
+  now="$(date +%s)"
+  message="Google Calendar connector not confirmed — connect it on the same Anthropic account."
+  escalation="still don't see Google Calendar — confirm it's connected on the same account"
+  write_state_jq '
+    .calendar = "pending"
+    | .calendar_pending_since = (.calendar_pending_since // ($now|tonumber))
+    | .message = (
+        if (($now|tonumber) - (.calendar_pending_since|tonumber)) >= ($escalate|tonumber) then
+          $escalation
+        else $message end
+      )
+  ' --arg now "$now" --arg escalate "$CALENDAR_ESCALATE_SECONDS" --arg message "$message" --arg escalation "$escalation"
 }
 
 dashboard_state_json() {
@@ -278,6 +310,42 @@ push_dashboard_from_state() {
   state="$(dashboard_state_json)"
   printf '%s\n' "$state" > "$INSTALLER_STATE_DIR/state.json"
   "$CLIENT" installer_push "$state" >/dev/null || true
+  terminal_surface_from_state
+}
+
+terminal_surface_from_state() {
+  [[ "$TERMINAL_FALLBACK" == "1" ]] || return 0
+  [[ -f "$INSTALL_STATE_FILE" ]] || return 0
+  local login_command="$DOMO login"
+  local out hash_file hash
+  out="$(LOGIN_COMMAND="$login_command" jq -r --arg prompt "$PROMPT" '
+    . as $root |
+    def line($s): select($s != null and ($s|tostring|length > 0)) | $s;
+    [
+      "Domo install status:",
+      line(.message // empty),
+      (if (.interview.status // "pending") != "collected" then "Answer in this terminal: " + $prompt else empty end),
+      (if (.login // "pending") != "confirmed" then "Run in a NEW terminal: " + env.LOGIN_COMMAND else empty end),
+      (if (.calendar // "pending") != "confirmed" then "Enable Google Calendar: https://claude.ai/customize/connectors" else empty end),
+      (if (.activation_detail.mode // "") == "solo" then
+        ("Text " + (.activation_detail.display_code // "<code>") + " to " + (.activation_detail.send_to // "<number>"))
+       elif (.activation_detail.mode // "") == "group" then
+        (if (.activation_detail.owner.status // "") != "verified" then
+          "Owner text " + (.activation_detail.owner.display_code // "<code>") + " to " + (.activation_detail.owner.send_to // "<number>")
+         else empty end),
+        ((.activation_detail.participants // [])[]
+          | select(.status != "verified")
+          | (.display_name + " text " + (.verification_code // "<code>") + " to " + (.provider_key // $root.activation_detail.chat.provider_key // $root.activation_detail.line.provider_key // "<number>")))
+       else empty end)
+    ] | map(select(. != null and . != "")) | join("\n")
+  ' "$INSTALL_STATE_FILE" 2>/dev/null || true)"
+  [[ -n "$out" ]] || return 0
+  hash="$(printf '%s' "$out" | cksum | awk '{print $1}')"
+  hash_file="${INSTALL_RUN_TMP_DIR:-${TMPDIR:-/tmp}}/terminal-surface.hash"
+  if [[ ! -f "$hash_file" || "$(cat "$hash_file" 2>/dev/null || true)" != "$hash" ]]; then
+    printf '%s\n' "$hash" > "$hash_file"
+    printf '\n[domo-install] terminal fallback\n%s\n' "$out"
+  fi
 }
 
 mark_interview_collected() {
@@ -471,10 +539,11 @@ run_preflight_once() {
   push_dashboard_from_state
 
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    local api_key_message="unset ANTHROPIC_API_KEY — Domo uses your subscription, not an API key"
     set_state_field login "pending"
-    set_state_message "unset ANTHROPIC_API_KEY — Domo uses your subscription, not an API key"
+    set_state_message "$api_key_message"
     push_dashboard_from_state
-    log "preflight blocked: ANTHROPIC_API_KEY is set"
+    log "$api_key_message"
     return 1
   fi
 
@@ -497,13 +566,13 @@ run_preflight_once() {
   log "preflight: probing Google Calendar tools inside the logged-in Domo session"
   if probe_calendar_in_session; then
     set_state_field calendar "confirmed"
+    clear_calendar_pending_since
     set_state_message ""
     push_dashboard_from_state
     PREFLIGHT_CONFIRMED_THIS_RUN=1
     rc=0
   else
-    set_state_field calendar "pending"
-    set_state_message "Google Calendar connector not confirmed — connect it on the same Anthropic account."
+    set_calendar_pending_message
     push_dashboard_from_state
     log "preflight: calendar still pending"
     rc=1

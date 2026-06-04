@@ -74,6 +74,9 @@ PLOW_ACTIVATION_FILE="$PLOW_DIR/activation.json" # transient pre-token secret
 PLOW_CHANNEL_DIR="$SCRIPT_DIR/channels/plow-chat" # channel server dir (registered as an MCP server)
 PLOW_BASE_URL="${PLOW_CHAT_BASE_URL:-https://api.plow.co}"
 SPAWN_CONFIRM="$SCRIPT_DIR/bin/spawn-confirm.expect" # drives the dev-channels confirmation for `start`
+ACTIVATION_TIMEOUT_SECONDS="${DOMO_ACTIVATION_TIMEOUT_SECONDS:-300}"
+ACTIVATION_POLL_INTERVAL_SECONDS="${DOMO_ACTIVATION_POLL_INTERVAL_SECONDS:-3}"
+ACTIVATION_MAX_RESENDS="${DOMO_ACTIVATION_MAX_RESENDS:-0}"
 
 # --- fakechat (marketplace) config, carried from run.sh ---
 MARKETPLACE_SRC="anthropics/claude-plugins-official"
@@ -613,7 +616,7 @@ mark_activation_dashboard_verified() {
 
 poll_activation_redeem() {
   local activation_secret="$1"
-  local deadline=$(( $(date +%s) + 300 ))
+  local deadline=$(( $(date +%s) + ACTIVATION_TIMEOUT_SECONDS ))
   local status="pending" redeem payload
   while :; do
     payload="$(ACTIVATION_SECRET="$activation_secret" bun -e 'process.stdout.write(JSON.stringify({activation_secret: process.env.ACTIVATION_SECRET}))')"
@@ -625,9 +628,9 @@ poll_activation_redeem() {
     fi
     [[ "$status" == "pending" ]] || die "activation redeem returned unexpected status '$status'."
     if [[ "$(date +%s)" -ge "$deadline" ]]; then
-      die "activation not verified within ~5 min. Re-run './domo activate' once you've texted the code."
+      return 75
     fi
-    sleep 3
+    sleep "$ACTIVATION_POLL_INTERVAL_SECONDS"
   done
 }
 
@@ -685,23 +688,25 @@ complete_activation() {
 }
 
 activate_solo_path() {
-  log "Requesting Plow activation at $PLOW_BASE_URL ..."
-  local response activation_secret display_code send_to line_id
-  response="$(plow_auth_activate '{"name":"Domo","provision_chat":true}')" \
-    || die "activation request failed (POST /v1/auth/activate). Check connectivity."
+  local resend_count=0
+  while :; do
+    log "Requesting Plow activation at $PLOW_BASE_URL ..."
+    local response activation_secret display_code send_to line_id
+    response="$(plow_auth_activate '{"name":"Domo","provision_chat":true}')" \
+      || die "activation request failed (POST /v1/auth/activate). Check connectivity."
 
-  activation_secret="$(printf '%s' "$response" | json_value activation_secret)"
-  display_code="$(printf '%s' "$response" | json_value display_code)"
-  send_to="$(printf '%s' "$response" | json_value send_to)"
-  line_id="$(printf '%s' "$response" | bun -e 'const o=JSON.parse(require("fs").readFileSync(0,"utf8"));process.stdout.write(String(o.line_id??o.line_uid??""))')"
+    activation_secret="$(printf '%s' "$response" | json_value activation_secret)"
+    display_code="$(printf '%s' "$response" | json_value display_code)"
+    send_to="$(printf '%s' "$response" | json_value send_to)"
+    line_id="$(printf '%s' "$response" | bun -e 'const o=JSON.parse(require("fs").readFileSync(0,"utf8"));process.stdout.write(String(o.line_id??o.line_uid??""))')"
 
-  [[ -n "$activation_secret" ]] || die "activation response missing activation_secret."
-  [[ -n "$display_code" && -n "$send_to" ]] || die "activation response missing display_code/send_to."
+    [[ -n "$activation_secret" ]] || die "activation response missing activation_secret."
+    [[ -n "$display_code" && -n "$send_to" ]] || die "activation response missing display_code/send_to."
 
-  write_activation_state_file "$response"
-  persist_solo_activation_detail "$response"
+    write_activation_state_file "$response"
+    persist_solo_activation_detail "$response"
 
-  cat >&2 <<EOF
+    cat >&2 <<EOF
 
 [domo] ============================================================
 [domo] PLOW ACTIVATION — ACTION REQUIRED
@@ -712,21 +717,33 @@ activate_solo_path() {
 [domo]
 [domo]   to:  $send_to
 [domo]
-[domo] (line: ${line_id:-unknown})  Polling for verification (up to ~5 min)...
+[domo] (line: ${line_id:-unknown})  Polling for verification (up to ${ACTIVATION_TIMEOUT_SECONDS}s before resend)...
 [domo] ============================================================
 EOF
 
-  push_activation_dashboard_row "You" pending "$display_code" "$send_to" true
+    push_activation_dashboard_row "You" pending "$display_code" "$send_to" true
 
-  local redeem token chat_uid
-  redeem="$(poll_activation_redeem "$activation_secret")" || return 1
-  token="$(printf '%s' "$redeem" | json_value token)"
-  chat_uid="$(printf '%s' "$redeem" | json_value chat.uid)"
-  [[ -n "$token" ]] || die "verified redeem response had no token."
-  [[ -n "$chat_uid" ]] || die "verified redeem response had no chat.uid."
+    local redeem rc token chat_uid
+    set +e
+    redeem="$(poll_activation_redeem "$activation_secret")"
+    rc=$?
+    set -e
+    if [[ "$rc" -eq 0 ]]; then
+      token="$(printf '%s' "$redeem" | json_value token)"
+      chat_uid="$(printf '%s' "$redeem" | json_value chat.uid)"
+      [[ -n "$token" ]] || die "verified redeem response had no token."
+      [[ -n "$chat_uid" ]] || die "verified redeem response had no chat.uid."
 
-  write_plow_channel_state_file "$token" "$chat_uid"
-  complete_activation "$chat_uid" solo
+      write_plow_channel_state_file "$token" "$chat_uid"
+      complete_activation "$chat_uid" solo
+      return 0
+    fi
+    [[ "$rc" -eq 75 ]] || return "$rc"
+    resend_count=$((resend_count + 1))
+    log "Activation code not received — re-issuing a fresh solo activation code."
+    [[ "$ACTIVATION_MAX_RESENDS" -eq 0 || "$resend_count" -le "$ACTIVATION_MAX_RESENDS" ]] \
+      || die "activation code still not received after resend; re-run './domo activate' to resend."
+  done
 }
 
 group_members_json() {
@@ -789,6 +806,11 @@ plow_create_group_chat() {
   local token="$1" line_id="$2" members_json="$3" payload
   payload="$(group_chat_payload "$line_id" "$members_json")"
   plow_http_json POST /v1/chats "$payload" "$token"
+}
+
+plow_resend_group_invitation() {
+  local token="$1" chat_uid="$2" participant_uid="$3"
+  plow_http_json POST "/v1/chats/$chat_uid/invitations/$participant_uid/resend" "" "$token"
 }
 
 persist_group_activation_detail() {
@@ -878,6 +900,67 @@ update_group_participant_status() {
   mv -f "$tmp" "$INSTALL_STATE_FILE"
 }
 
+update_group_participant_code() {
+  local participant_json="$1"
+  local participant_file tmp
+  participant_file="$(umask 077; mktemp "${TMPDIR:-/tmp}/domo-resend-participant.XXXXXX")"
+  printf '%s' "$participant_json" > "$participant_file"
+  tmp="$(umask 077; mktemp "$DOMO_HOME/.install-state.json.XXXXXX")"
+  INSTALL_STATE_FILE="$INSTALL_STATE_FILE" bun -e '
+    const fs = require("fs");
+    const [out, participantFile] = process.argv.slice(1);
+    const state = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8"));
+    const updated = JSON.parse(fs.readFileSync(participantFile, "utf8"));
+    const detail = state.activation_detail || {};
+    for (const p of detail.participants || []) {
+      if (p.uid === updated.uid) {
+        p.status = updated.status === "active" ? "verified" : "pending";
+        p.verification_code = updated.verification_code;
+        p.verification_code_expires_at = updated.verification_code_expires_at;
+      }
+    }
+    for (const p of detail.chat?.participants || []) {
+      if (p.uid === updated.uid) {
+        p.status = updated.status;
+        p.verification_code = updated.verification_code;
+        p.verification_code_expires_at = updated.verification_code_expires_at;
+      }
+    }
+    fs.writeFileSync(out, JSON.stringify(state, null, 2) + "\n");
+  ' "$tmp" "$participant_file"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$INSTALL_STATE_FILE"
+  rm -f "$participant_file"
+}
+
+pending_group_members() {
+  INSTALL_STATE_FILE="$INSTALL_STATE_FILE" bun -e '
+    const fs = require("fs");
+    const state = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8"));
+    const pending = (state.activation_detail?.participants || [])
+      .filter((p) => p.status !== "verified")
+      .map((p) => p.display_name)
+      .filter(Boolean);
+    process.stdout.write(pending.join(", "));
+  '
+}
+
+set_group_pending_message() {
+  local pending="$1"
+  local tmp; tmp="$(umask 077; mktemp "$DOMO_HOME/.install-state.json.XXXXXX")"
+  INSTALL_STATE_FILE="$INSTALL_STATE_FILE" PENDING_MEMBERS="$pending" bun -e '
+    const fs = require("fs");
+    const out = process.argv.slice(1)[0];
+    const state = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8"));
+    state.message = process.env.PENDING_MEMBERS
+      ? `Waiting on household verification: ${process.env.PENDING_MEMBERS}`
+      : "";
+    fs.writeFileSync(out, JSON.stringify(state, null, 2) + "\n");
+  ' "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$INSTALL_STATE_FILE"
+}
+
 set_group_chat_active() {
   local tmp; tmp="$(umask 077; mktemp "$DOMO_HOME/.install-state.json.XXXXXX")"
   INSTALL_STATE_FILE="$INSTALL_STATE_FILE" bun -e '
@@ -948,6 +1031,37 @@ EOF
 reveal_group_member_codes() {
   push_group_dashboard_from_detail
   print_group_member_codes_from_detail
+  local pending
+  pending="$(pending_group_members)"
+  set_group_pending_message "$pending"
+  [[ -n "$pending" ]] && log "Waiting on household verification: $pending"
+}
+
+resend_pending_group_codes() {
+  local token="$1" chat_uid="$2" initial_pending
+  initial_pending="$(pending_group_members)"
+  INSTALL_STATE_FILE="$INSTALL_STATE_FILE" bun -e '
+    const fs = require("fs");
+    const d = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8")).activation_detail;
+    for (const p of d.participants || []) {
+      if (p.status !== "verified") console.log([p.uid, p.display_name].join("\t"));
+    }
+  ' | while IFS=$'\t' read -r uid name; do
+    [[ -n "$uid" ]] || continue
+    local participant_json code number
+    participant_json="$(plow_resend_group_invitation "$token" "$chat_uid" "$uid")"
+    update_group_participant_code "$participant_json"
+    code="$(printf '%s' "$participant_json" | json_value verification_code)"
+    number="$(group_detail_field chat.provider_key)"
+    [[ -n "$number" ]] || number="$(group_detail_field line.provider_key)"
+    log "Re-issued verification code for ${name:-$uid}; text $code to $number."
+  done
+  push_group_dashboard_from_detail
+  print_group_member_codes_from_detail
+  local pending
+  pending="$(pending_group_members)"
+  set_group_pending_message "$pending"
+  [[ -n "$initial_pending" ]] && log "Fresh group verification code(s) issued. Still waiting on: ${pending:-none}"
 }
 
 plow_ws_ticket() {
@@ -972,7 +1086,9 @@ plow_ws_listen_once() {
     const ws = new WebSocket(process.env.WS_URL);
     let sawActive = false;
     let opened = false;
+    let timedOut = false;
     const timeout = setTimeout(() => {
+      timedOut = true;
       console.error("timed out waiting for Plow websocket frames");
       try { ws.close(); } catch {}
       process.exit(68);
@@ -988,7 +1104,7 @@ plow_ws_listen_once() {
     });
     ws.addEventListener("close", () => {
       clearTimeout(timeout);
-      process.exit(sawActive ? 0 : opened ? 66 : 67);
+      process.exit(sawActive ? 0 : timedOut ? 68 : opened ? 66 : 67);
     });
     ws.addEventListener("error", () => {
       clearTimeout(timeout);
@@ -1009,12 +1125,17 @@ handle_group_ws_frame() {
       [[ -n "$uid" ]] || die "participant_verified frame missing participant.uid"
       update_group_participant_status "$uid" verified "$provider"
       [[ -n "$name" ]] && mark_activation_dashboard_verified "$name" "$uid"
+      local pending
+      pending="$(pending_group_members)"
+      set_group_pending_message "$pending"
+      [[ -n "$pending" ]] && log "Still waiting on household verification: $pending"
       ;;
     connected)
       return 11
       ;;
     chat_active)
       set_group_chat_active
+      set_group_pending_message ""
       push_group_dashboard_from_detail
       return 10
       ;;
@@ -1026,7 +1147,7 @@ handle_group_ws_frame() {
 }
 
 listen_group_until_chat_active() {
-  local token="$1" chat_uid="$2" reconnects=0
+  local token="$1" chat_uid="$2" reconnects=0 resend_count=0
   local revealed=0
   while :; do
     local ticket ws_url fifo pid rc active=0
@@ -1058,10 +1179,19 @@ listen_group_until_chat_active() {
     set -e
     rm -f "$fifo"
     [[ "$active" -eq 1 ]] && return 0
+    if [[ "$rc" -eq 68 ]]; then
+      resend_count=$((resend_count + 1))
+      log "No member verification received before timeout — offering resend for pending household members."
+      [[ "$ACTIVATION_MAX_RESENDS" -eq 0 || "$resend_count" -le "$ACTIVATION_MAX_RESENDS" ]] \
+        || die "group verification codes still not received after resend; retry './domo activate' to resend."
+      resend_pending_group_codes "$token" "$chat_uid"
+      continue
+    fi
     if [[ "$reconnects" -lt 1 ]]; then
       reconnects=$((reconnects + 1))
-      log "Plow websocket dropped before chat_active; reconnecting once."
+      log "Plow websocket dropped before chat_active; reconnecting once after backoff."
       _dash installer_step plow active "Plow chat verification reconnecting..."
+      sleep 2
     else
       die "Plow websocket dropped after one reconnect before chat_active; retry './domo activate'."
     fi
@@ -1075,19 +1205,21 @@ start_group_activation() {
   [[ "$(MEMBERS_JSON="$members_json" bun -e 'process.stdout.write(String(JSON.parse(process.env.MEMBERS_JSON).length))')" -gt 0 ]] \
     || die "group activation requires at least one member in $INSTALL_STATE_FILE."
 
-  log "Requesting Plow owner activation at $PLOW_BASE_URL ..."
-  response="$(plow_auth_activate '{"name":"Domo"}')" \
-    || die "activation request failed (POST /v1/auth/activate). Check connectivity."
-  activation_secret="$(printf '%s' "$response" | json_value activation_secret)"
-  display_code="$(printf '%s' "$response" | json_value display_code)"
-  send_to="$(printf '%s' "$response" | json_value send_to)"
-  line_id="$(printf '%s' "$response" | bun -e 'const o=JSON.parse(require("fs").readFileSync(0,"utf8"));process.stdout.write(String(o.line_id??o.line_uid??""))')"
-  [[ -n "$activation_secret" ]] || die "activation response missing activation_secret."
-  [[ -n "$display_code" && -n "$send_to" ]] || die "activation response missing display_code/send_to."
-  write_activation_state_file "$response"
-  persist_group_owner_activation_detail "$response" pending
+  local owner_resend_count=0
+  while :; do
+    log "Requesting Plow owner activation at $PLOW_BASE_URL ..."
+    response="$(plow_auth_activate '{"name":"Domo"}')" \
+      || die "activation request failed (POST /v1/auth/activate). Check connectivity."
+    activation_secret="$(printf '%s' "$response" | json_value activation_secret)"
+    display_code="$(printf '%s' "$response" | json_value display_code)"
+    send_to="$(printf '%s' "$response" | json_value send_to)"
+    line_id="$(printf '%s' "$response" | bun -e 'const o=JSON.parse(require("fs").readFileSync(0,"utf8"));process.stdout.write(String(o.line_id??o.line_uid??""))')"
+    [[ -n "$activation_secret" ]] || die "activation response missing activation_secret."
+    [[ -n "$display_code" && -n "$send_to" ]] || die "activation response missing display_code/send_to."
+    write_activation_state_file "$response"
+    persist_group_owner_activation_detail "$response" pending
 
-  cat >&2 <<EOF
+    cat >&2 <<EOF
 
 [domo] ============================================================
 [domo] PLOW OWNER ACTIVATION — ACTION REQUIRED
@@ -1098,16 +1230,29 @@ start_group_activation() {
 [domo]
 [domo]   to:  $send_to
 [domo]
-[domo] (line: ${line_id:-unknown})  Polling for owner verification...
+[domo] (line: ${line_id:-unknown})  Polling for owner verification (up to ${ACTIVATION_TIMEOUT_SECONDS}s before resend)...
 [domo] ============================================================
 EOF
-  push_activation_dashboard_row "Owner" pending "$display_code" "$send_to" true owner
+    push_activation_dashboard_row "Owner" pending "$display_code" "$send_to" true owner
 
-  redeem="$(poll_activation_redeem "$activation_secret")" || return 1
-  token="$(printf '%s' "$redeem" | json_value token)"
-  [[ -n "$token" ]] || die "verified redeem response had no token."
-  persist_group_owner_activation_detail "$response" verified
-  push_activation_dashboard_row "Owner" verified "$display_code" "$send_to" true owner
+    local rc
+    set +e
+    redeem="$(poll_activation_redeem "$activation_secret")"
+    rc=$?
+    set -e
+    if [[ "$rc" -eq 0 ]]; then
+      token="$(printf '%s' "$redeem" | json_value token)"
+      [[ -n "$token" ]] || die "verified redeem response had no token."
+      persist_group_owner_activation_detail "$response" verified
+      push_activation_dashboard_row "Owner" verified "$display_code" "$send_to" true owner
+      break
+    fi
+    [[ "$rc" -eq 75 ]] || return "$rc"
+    owner_resend_count=$((owner_resend_count + 1))
+    log "Owner activation code not received — re-issuing a fresh owner activation code."
+    [[ "$ACTIVATION_MAX_RESENDS" -eq 0 || "$owner_resend_count" -le "$ACTIVATION_MAX_RESENDS" ]] \
+      || die "owner activation code still not received after resend; re-run './domo activate' to resend."
+  done
 
   line_json="$(plow_get_primary_line "$token")"
   line_id="$(printf '%s' "$line_json" | json_value uid)"
