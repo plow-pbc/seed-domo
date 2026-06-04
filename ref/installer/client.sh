@@ -150,19 +150,22 @@ installer_step() {
   ' --arg id "$1" --arg status "$2" --arg label "${3:-}" --arg where "${4:-}" --arg cc "${5:-}"
 }
 
-# installer_verify <name> <status> [code] [number] [self]: upsert a member row by name.
+# installer_verify <name> <status> [code] [number] [self] [id]: upsert a member row.
+# If id is present, rows are keyed by id; otherwise name is the key for back-compat.
 installer_verify() {
   [ "$#" -ge 2 ] || { echo "usage: installer_verify <name> <status> [code] [number] [self]" >&2; return 2; }
   _state_jq '
     ( {name:$name, status:$status}
+      + (if $id!=""     then {id:$id}       else {} end)
       + (if $code!=""   then {code:$code}     else {} end)
       + (if $number!="" then {number:$number} else {} end)
       + (if ($self=="true" or $self=="self") then {isSelf:true} else {} end)
     ) as $m
-    | .verification = (if any((.verification//[])[]?; .name==$name)
-                       then [(.verification//[])[] | if .name==$name then $m else . end]
+    | ($id // "") as $key
+    | .verification = (if any((.verification//[])[]?; (if $key != "" then .id==$key else .name==$name end))
+                       then [(.verification//[])[] | if (if $key != "" then .id==$key else .name==$name end) then $m else . end]
                        else ((.verification // []) + [$m]) end)
-  ' --arg name "$1" --arg status "$2" --arg code "${3:-}" --arg number "${4:-}" --arg self "${5:-}"
+  ' --arg name "$1" --arg status "$2" --arg code "${3:-}" --arg number "${4:-}" --arg self "${5:-}" --arg id "${6:-}"
 }
 
 # installer_done [message]: final success state.

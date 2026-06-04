@@ -10,7 +10,7 @@
 //
 // Test-only helpers:
 //   POST /_stub/text       {"text":"<exact activation or VERIFY code>"}
-//   POST /_stub/config     {"ws_close_on_open":true|false}
+//   POST /_stub/config     {"ws_close_on_open":true|false,"response_delay_ms":0}
 //   GET  /_stub/calls      call counters for restart/resume evidence
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -69,6 +69,7 @@ const sockets = new Set<any>();
 const calls = { activate: 0, redeem: 0, lines: 0, chats: 0, ws_ticket: 0 };
 let wsCloseOnOpen = process.env.PLOW_STUB_WS_CLOSE_ON_OPEN === "1";
 let redeemErrorStatus = 0;
+let responseDelayMs = 0;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -79,6 +80,10 @@ function json(body: unknown, status = 200): Response {
 
 function error(status: number, message: string): Response {
   return json({ error: { type: "invalid_request_error", message } }, status);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function id(prefix: string): string {
@@ -287,6 +292,9 @@ const server = Bun.serve({
   hostname: "127.0.0.1",
   port: Number(process.env.PLOW_STUB_PORT || 0),
   async fetch(req, server) {
+    if (responseDelayMs > 0 && new URL(req.url).pathname.startsWith("/v1/")) {
+      await sleep(responseDelayMs);
+    }
     const url = new URL(req.url);
     const { pathname } = url;
     if (pathname === "/healthz" && req.method === "GET") return json({ status: "ok" });
@@ -296,7 +304,8 @@ const server = Bun.serve({
       if (body instanceof Response) return body;
       wsCloseOnOpen = body.ws_close_on_open === true;
       redeemErrorStatus = typeof body.redeem_error_status === "number" ? body.redeem_error_status : 0;
-      return json({ ws_close_on_open: wsCloseOnOpen, redeem_error_status: redeemErrorStatus });
+      responseDelayMs = typeof body.response_delay_ms === "number" ? body.response_delay_ms : 0;
+      return json({ ws_close_on_open: wsCloseOnOpen, redeem_error_status: redeemErrorStatus, response_delay_ms: responseDelayMs });
     }
     if (pathname === "/_stub/text" && req.method === "POST") {
       const body = await parseJson(req);
@@ -341,6 +350,7 @@ const server = Bun.serve({
   websocket: {
     open(ws) {
       sockets.add(ws);
+      ws.send(JSON.stringify({ type: "connected" }));
       if (wsCloseOnOpen) {
         setTimeout(() => ws.close(1011, "simulated drop"), 25);
       }

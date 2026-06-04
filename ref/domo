@@ -436,11 +436,20 @@ json_value() {
 
 plow_http_json() {
   local method="$1" path="$2" body="${3:-}" token="${4:-}"
-  local url="${PLOW_BASE_URL%/}$path" out err code rc
+  local url="${PLOW_BASE_URL%/}$path" out err config code rc
   out="$(mktemp "${TMPDIR:-/tmp}/domo-plow-body.XXXXXX")"
   err="$(mktemp "${TMPDIR:-/tmp}/domo-plow-err.XXXXXX")"
   local args=(-sS -o "$out" -w "%{http_code}" -X "$method" "$url" -H 'Content-Type: application/json')
-  [[ -n "$token" ]] && args+=(-H "Authorization: Bearer $token")
+  if [[ -n "$token" ]]; then
+    config="$(umask 077; mktemp "${TMPDIR:-/tmp}/domo-plow-curl.XXXXXX")"
+    TOKEN="$token" bun -e '
+      const fs = require("fs");
+      const out = process.argv.slice(1)[0];
+      const token = process.env.TOKEN.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+      fs.writeFileSync(out, `header = "Authorization: Bearer ${token}"\n`);
+    ' "$config"
+    args+=(--config "$config")
+  fi
   if [[ "$method" != "GET" ]]; then
     args+=(--data-binary @-)
     set +e
@@ -455,22 +464,22 @@ plow_http_json() {
   fi
   if [[ "$rc" -ne 0 ]]; then
     local msg; msg="$(tr '\n' ' ' < "$err" | sed 's/[[:space:]]\+/ /g')"
-    rm -f "$out" "$err"
+    rm -f "$out" "$err" "${config:-}"
     die "Plow API $method $path failed: ${msg:-curl exit $rc}"
   fi
   if [[ ! "$code" =~ ^[0-9][0-9][0-9]$ || "$code" -lt 200 || "$code" -ge 300 ]]; then
     local response; response="$(tr '\n' ' ' < "$out" | sed 's/[[:space:]]\+/ /g')"
-    rm -f "$out" "$err"
+    rm -f "$out" "$err" "${config:-}"
     die "Plow API $method $path returned HTTP ${code:-000}: ${response:-<empty response>}"
   fi
   if ! bun -e 'JSON.parse(require("fs").readFileSync(process.argv.slice(1)[0], "utf8"))' "$out" 2>"$err"; then
     local parse_err; parse_err="$(tr '\n' ' ' < "$err" | sed 's/[[:space:]]\+/ /g')"
     local response; response="$(tr '\n' ' ' < "$out" | sed 's/[[:space:]]\+/ /g')"
-    rm -f "$out" "$err"
+    rm -f "$out" "$err" "${config:-}"
     die "Plow API $method $path returned invalid JSON: ${parse_err:-parse failed}; body=${response:-<empty>}"
   fi
   cat "$out"
-  rm -f "$out" "$err"
+  rm -f "$out" "$err" "${config:-}"
 }
 
 plow_auth_activate() {
@@ -499,19 +508,19 @@ write_activation_state_file() {
 }
 
 push_activation_dashboard_row() {
-  local name="$1" status="$2" display_code="${3:-}" send_to="${4:-}" is_self="${5:-false}"
+  local name="$1" status="$2" display_code="${3:-}" send_to="${4:-}" is_self="${5:-false}" row_id="${6:-}"
   _dash installer_step plow active "Activate Plow chat — text the code"
   if [[ "$is_self" == "true" || "$is_self" == "self" ]]; then
-    _dash installer_verify "$name" "$status" "$display_code" "$send_to" self
+    _dash installer_verify "$name" "$status" "$display_code" "$send_to" self "$row_id"
   else
-    _dash installer_verify "$name" "$status" "$display_code" "$send_to"
+    _dash installer_verify "$name" "$status" "$display_code" "$send_to" false "$row_id"
   fi
 }
 
 mark_activation_dashboard_verified() {
-  local name="${1:-You}"
-  _dash installer_verify "$name" verified
-  _dash installer_step plow ok "Plow chat active"
+  local name="${1:-You}" row_id="${2:-}" step_done="${3:-false}"
+  _dash installer_verify "$name" verified "" "" false "$row_id"
+  [[ "$step_done" == "true" ]] && _dash installer_step plow ok "Plow chat active"
 }
 
 poll_activation_redeem() {
@@ -569,7 +578,7 @@ complete_activation() {
   local chat_uid="$1" mode="${2:-solo}"
   rm -f "$PLOW_ACTIVATION_FILE"
   set_install_activation_status complete
-  [[ "$mode" == "solo" ]] && mark_activation_dashboard_verified "You"
+  [[ "$mode" == "solo" ]] && mark_activation_dashboard_verified "You" "" true
   [[ "$mode" == "group" ]] && _dash installer_step plow ok "Plow chat active"
   log "Activation verified. State written to $PLOW_STATE_FILE (chmod 600). chat_uid=$chat_uid"
   log "Token stored (NOT printed). If a session is already running: './domo stop && ./domo start' to pick it up."
@@ -795,16 +804,40 @@ push_group_dashboard_from_detail() {
   local owner_code owner_send
   owner_code="$(group_detail_field owner.display_code)"
   owner_send="$(group_detail_field owner.send_to)"
-  push_activation_dashboard_row "Owner" verified "$owner_code" "$owner_send" true
+  push_activation_dashboard_row "Owner" verified "$owner_code" "$owner_send" true owner
   INSTALL_STATE_FILE="$INSTALL_STATE_FILE" bun -e '
     const fs = require("fs");
     const d = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8")).activation_detail;
     for (const p of d.participants || []) {
-      console.log([p.display_name, p.status === "verified" ? "verified" : "pending", p.verification_code || "", p.provider_key || d.chat?.provider_key || d.line?.provider_key || ""].join("\t"));
+      console.log([p.uid, p.display_name, p.status === "verified" ? "verified" : "pending", p.verification_code || "", p.provider_key || d.chat?.provider_key || d.line?.provider_key || ""].join("\t"));
     }
-  ' | while IFS=$'\t' read -r name status code number; do
-    push_activation_dashboard_row "$name" "$status" "$code" "$number" false
+  ' | while IFS=$'\t' read -r uid name status code number; do
+    push_activation_dashboard_row "$name" "$status" "$code" "$number" false "$uid"
   done
+}
+
+print_group_member_codes_from_detail() {
+  local provider_key
+  provider_key="$(group_detail_field line.provider_key)"
+  [[ -n "$provider_key" ]] || provider_key="$(group_detail_field chat.provider_key)"
+  cat >&2 <<EOF
+
+[domo] ============================================================
+[domo] HOUSEHOLD MEMBER VERIFICATION — ACTION REQUIRED
+[domo] ============================================================
+[domo] Each household member now texts their own VERIFY code to: $provider_key
+EOF
+  INSTALL_STATE_FILE="$INSTALL_STATE_FILE" bun -e '
+    const fs = require("fs");
+    const d = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8")).activation_detail;
+    for (const p of d.participants || []) console.error(`[domo]   ${p.display_name}: ${p.verification_code}`);
+  '
+  printf '[domo] ============================================================\n' >&2
+}
+
+reveal_group_member_codes() {
+  push_group_dashboard_from_detail
+  print_group_member_codes_from_detail
 }
 
 plow_ws_ticket() {
@@ -865,7 +898,10 @@ handle_group_ws_frame() {
       provider="$(printf '%s' "$frame" | json_value participant.provider_key)"
       [[ -n "$uid" ]] || die "participant_verified frame missing participant.uid"
       update_group_participant_status "$uid" verified "$provider"
-      [[ -n "$name" ]] && mark_activation_dashboard_verified "$name"
+      [[ -n "$name" ]] && mark_activation_dashboard_verified "$name" "$uid"
+      ;;
+    connected)
+      return 11
       ;;
     chat_active)
       set_group_chat_active
@@ -881,6 +917,7 @@ handle_group_ws_frame() {
 
 listen_group_until_chat_active() {
   local token="$1" chat_uid="$2" reconnects=0
+  local revealed=0
   while :; do
     local ticket ws_url fifo pid rc active=0
     ticket="$(plow_ws_ticket "$token" "$chat_uid")"
@@ -891,12 +928,19 @@ listen_group_until_chat_active() {
     plow_ws_listen_once "$ws_url" > "$fifo" &
     pid=$!
     while IFS= read -r frame; do
-      if handle_group_ws_frame "$frame"; then
-        :
-      else
-        local hrc=$?
-        [[ "$hrc" -eq 10 ]] && active=1
-      fi
+      local hrc=0
+      handle_group_ws_frame "$frame" || hrc=$?
+      case "$hrc" in
+        0) ;;
+        10) active=1 ;;
+        11)
+          if [[ "$revealed" -eq 0 ]]; then
+            reveal_group_member_codes
+            revealed=1
+          fi
+          ;;
+        *) die "unexpected group websocket handler status $hrc" ;;
+      esac
     done < "$fifo"
     set +e
     wait "$pid"
@@ -916,7 +960,7 @@ listen_group_until_chat_active() {
 }
 
 start_group_activation() {
-  local members_json response activation_secret display_code send_to line_id redeem token line_json chat_json chat_uid provider_key
+  local members_json response activation_secret display_code send_to line_id redeem token line_json chat_json chat_uid
   members_json="$(group_members_json)"
   [[ "$(MEMBERS_JSON="$members_json" bun -e 'process.stdout.write(String(JSON.parse(process.env.MEMBERS_JSON).length))')" -gt 0 ]] \
     || die "group activation requires at least one member in $INSTALL_STATE_FILE."
@@ -946,36 +990,20 @@ start_group_activation() {
 [domo] (line: ${line_id:-unknown})  Polling for owner verification...
 [domo] ============================================================
 EOF
-  push_activation_dashboard_row "Owner" pending "$display_code" "$send_to" true
+  push_activation_dashboard_row "Owner" pending "$display_code" "$send_to" true owner
 
   redeem="$(poll_activation_redeem "$activation_secret")" || return 1
   token="$(printf '%s' "$redeem" | json_value token)"
   [[ -n "$token" ]] || die "verified redeem response had no token."
-  mark_activation_dashboard_verified "Owner"
+  push_activation_dashboard_row "Owner" verified "$display_code" "$send_to" true owner
 
   line_json="$(plow_get_primary_line "$token")"
   line_id="$(printf '%s' "$line_json" | json_value uid)"
-  provider_key="$(printf '%s' "$line_json" | json_value provider_key)"
   chat_json="$(plow_create_group_chat "$token" "$line_id" "$members_json")"
   chat_uid="$(printf '%s' "$chat_json" | json_value uid)"
   [[ -n "$chat_uid" ]] || die "POST /v1/chats response missing chat uid."
 
   persist_group_activation_detail "$token" "$response" "$line_json" "$chat_json"
-  push_group_dashboard_from_detail
-
-  cat >&2 <<EOF
-
-[domo] ============================================================
-[domo] HOUSEHOLD MEMBER VERIFICATION — ACTION REQUIRED
-[domo] ============================================================
-[domo] Each household member now texts their own VERIFY code to: $provider_key
-EOF
-  INSTALL_STATE_FILE="$INSTALL_STATE_FILE" bun -e '
-    const fs = require("fs");
-    const d = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8")).activation_detail;
-    for (const p of d.participants || []) console.error(`[domo]   ${p.display_name}: ${p.verification_code}`);
-  '
-  printf '[domo] ============================================================\n' >&2
 }
 
 activate_group_path() {
@@ -985,7 +1013,6 @@ activate_group_path() {
     start_group_activation
   fi
 
-  push_group_dashboard_from_detail
   local token chat_uid
   token="$(group_detail_field token)"
   chat_uid="$(group_detail_field chat.uid)"
