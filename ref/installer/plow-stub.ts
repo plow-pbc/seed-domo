@@ -1,11 +1,17 @@
-// Minimal Plow activation stub for install-UX chunk repros.
+// Plow activation/group-chat stub for install-UX repros.
 //
 // Covered Plow endpoints:
 //   POST /v1/auth/activate
 //   POST /v1/auth/activate/redeem
+//   GET  /v1/lines
+//   POST /v1/chats
+//   POST /v1/ws/ticket
+//   GET  /v1/ws?ticket=...
 //
-// Test-only helper:
-//   POST /_stub/text  {"text":"<display_code>"}  marks the activation verified.
+// Test-only helpers:
+//   POST /_stub/text       {"text":"<exact activation or VERIFY code>"}
+//   POST /_stub/config     {"ws_close_on_open":true|false}
+//   GET  /_stub/calls      call counters for restart/resume evidence
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -21,8 +27,48 @@ type Activation = {
   chatUid: string;
 };
 
+type MemberParticipant = {
+  type: "member";
+  object: "chat_participant";
+  uid: string;
+  status: "pending_verification" | "active";
+  display_name: string;
+  provider_type: "imessage";
+  provider_key: string | null;
+  verification_code: string;
+  verification_code_expires_at: string;
+  verified_at: string | null;
+  joined_at: string | null;
+};
+
+type Chat = {
+  uid: string;
+  object: "chat";
+  status: "pending" | "active";
+  provider_key: string;
+  failure_reason: null;
+  participants: Array<Record<string, unknown> | MemberParticipant>;
+  created_at: string;
+};
+
+const line = {
+  object: "line",
+  uid: "ln_stub_000001",
+  provider_type: "imessage",
+  provider_key: "+15550001003",
+};
+
 const activations = new Map<string, Activation>();
-const codes = new Map<string, string>();
+const tokens = new Map<string, Activation>();
+const activationCodes = new Map<string, string>();
+const chats = new Map<string, Chat>();
+const verificationCodes = new Map<string, { chatUid: string; participantUid: string }>();
+const tickets = new Map<string, string>();
+const sockets = new Set<any>();
+
+const calls = { activate: 0, redeem: 0, lines: 0, chats: 0, ws_ticket: 0 };
+let wsCloseOnOpen = process.env.PLOW_STUB_WS_CLOSE_ON_OPEN === "1";
+let redeemErrorStatus = 0;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -31,47 +77,89 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+function error(status: number, message: string): Response {
+  return json({ error: { type: "invalid_request_error", message } }, status);
+}
+
 function id(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
 }
 
-async function parseBody(req: Request): Promise<Record<string, unknown>> {
+function code(prefix: string): string {
+  return `${prefix}-${crypto.randomUUID().replaceAll("-", "").slice(0, 6).toUpperCase()}`;
+}
+
+async function parseJson(req: Request): Promise<Record<string, unknown> | Response> {
+  const text = await req.text();
+  if (!text.trim()) return {};
   try {
-    return await req.json();
+    const body = JSON.parse(text);
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return error(400, "JSON body must be an object");
+    }
+    return body as Record<string, unknown>;
   } catch {
-    return {};
+    return error(400, "malformed JSON body");
   }
 }
 
-function createActivation(body: Record<string, unknown>): Response {
-  const activationSecret = id("actsec");
-  const displayCode = `ACT-${crypto.randomUUID().replaceAll("-", "").slice(0, 6).toUpperCase()}`;
-  const activation: Activation = {
-    activationSecret,
-    displayCode,
-    sendTo: "+15550001003",
-    lineId: id("ln"),
-    provisionChat: body.provision_chat === true,
-    verified: false,
-    token: id("plow_stub_token"),
-    chatUid: id("cht"),
-  };
-  activations.set(activationSecret, activation);
-  codes.set(displayCode, activationSecret);
-  return json({
+function bearer(req: Request): string | null {
+  const auth = req.headers.get("authorization") || "";
+  const match = auth.match(/^Bearer (.+)$/);
+  return match ? match[1] : null;
+}
+
+function requireToken(req: Request): Response | Activation {
+  const token = bearer(req);
+  if (!token) return error(401, "missing Bearer token");
+  const activation = tokens.get(token);
+  if (!activation) return error(401, "unknown Bearer token");
+  return activation;
+}
+
+function activationResponse(activation: Activation): Record<string, unknown> {
+  return {
     object: "activation",
     activation_secret: activation.activationSecret,
     display_code: activation.displayCode,
     send_to: activation.sendTo,
     line_id: activation.lineId,
-  });
+  };
+}
+
+function createActivation(body: Record<string, unknown>): Response {
+  calls.activate++;
+  if (typeof body.name !== "string" || body.name.trim() === "") {
+    return error(400, "name is required");
+  }
+  if ("provision_chat" in body && typeof body.provision_chat !== "boolean") {
+    return error(400, "provision_chat must be a boolean when provided");
+  }
+  const activation: Activation = {
+    activationSecret: id("actsec"),
+    displayCode: code("ACT"),
+    sendTo: line.provider_key,
+    lineId: line.uid,
+    provisionChat: body.provision_chat === true,
+    verified: false,
+    token: id("plow_stub_token"),
+    chatUid: id("cht"),
+  };
+  activations.set(activation.activationSecret, activation);
+  activationCodes.set(activation.displayCode, activation.activationSecret);
+  return json(activationResponse(activation));
 }
 
 function redeemActivation(body: Record<string, unknown>): Response {
-  const activationSecret = String(body.activation_secret || "");
-  const activation = activations.get(activationSecret);
-  if (!activation) return json({ error: "unknown activation_secret" }, 404);
+  calls.redeem++;
+  if (redeemErrorStatus) return error(redeemErrorStatus, "simulated redeem failure");
+  if (typeof body.activation_secret !== "string" || body.activation_secret.trim() === "") {
+    return error(400, "activation_secret is required");
+  }
+  const activation = activations.get(body.activation_secret);
+  if (!activation) return error(404, "unknown activation_secret");
   if (!activation.verified) return json({ status: "pending" });
+  tokens.set(activation.token, activation);
   return json({
     status: "verified",
     token: activation.token,
@@ -79,38 +167,187 @@ function redeemActivation(body: Record<string, unknown>): Response {
   });
 }
 
-function receiveText(body: Record<string, unknown>): Response {
-  const text = String(body.text || body.body || "").trim();
-  const displayCode = [...codes.keys()].find((code) => text.includes(code));
-  if (!displayCode) return json({ error: "unknown display_code" }, 404);
-  const activation = activations.get(codes.get(displayCode) || "");
-  if (!activation) return json({ error: "unknown activation" }, 404);
-  activation.verified = true;
-  return json({
-    status: "verified",
-    display_code: displayCode,
-    activation_secret: activation.activationSecret,
+function listLines(req: Request): Response {
+  calls.lines++;
+  const auth = requireToken(req);
+  if (auth instanceof Response) return auth;
+  return json({ object: "list", data: [line], has_more: false, url: "/v1/lines" });
+}
+
+function createChat(req: Request, body: Record<string, unknown>): Response {
+  calls.chats++;
+  const auth = requireToken(req);
+  if (auth instanceof Response) return auth;
+  const participants = body.participants;
+  if (!Array.isArray(participants)) return error(400, "participants array is required");
+  const agents = participants.filter((p) => p && typeof p === "object" && (p as any).type === "agent");
+  const members = participants.filter((p) => p && typeof p === "object" && (p as any).type === "member");
+  if (agents.length !== 1) return error(400, "exactly one agent participant is required");
+  if (members.length < 1) return error(400, "at least one member participant is required");
+  if ((agents[0] as any).line_id !== line.uid) return error(400, "agent.line_id is unknown");
+  const chatUid = id("cht");
+  const memberParticipants: MemberParticipant[] = members.map((member) => {
+    const displayName = String((member as any).display_name || "").trim();
+    if (!displayName) throw new Error("member.display_name is required");
+    return {
+      type: "member",
+      object: "chat_participant",
+      uid: id("cp"),
+      status: "pending_verification",
+      display_name: displayName,
+      provider_type: "imessage",
+      provider_key: null,
+      verification_code: code("VERIFY"),
+      verification_code_expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      verified_at: null,
+      joined_at: null,
+    };
   });
+  const chat: Chat = {
+    uid: chatUid,
+    object: "chat",
+    status: "pending",
+    provider_key: line.provider_key,
+    failure_reason: null,
+    participants: [
+      { type: "agent", line },
+      ...memberParticipants,
+    ],
+    created_at: new Date().toISOString(),
+  };
+  chats.set(chat.uid, chat);
+  for (const participant of memberParticipants) {
+    verificationCodes.set(participant.verification_code, {
+      chatUid: chat.uid,
+      participantUid: participant.uid,
+    });
+  }
+  return json(chat, 201);
+}
+
+function mintTicket(req: Request, body: Record<string, unknown>): Response {
+  calls.ws_ticket++;
+  const auth = requireToken(req);
+  if (auth instanceof Response) return auth;
+  if (typeof body.chat_id !== "string" || body.chat_id.trim() === "") {
+    return error(400, "chat_id is required");
+  }
+  if (!chats.has(body.chat_id)) return error(404, "unknown chat_id");
+  const ticket = id("wst");
+  tickets.set(ticket, body.chat_id);
+  return json({ object: "ws_ticket", ticket, expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString() });
+}
+
+function emit(chatUid: string, frame: Record<string, unknown>): void {
+  const text = JSON.stringify(frame);
+  for (const ws of sockets) {
+    if (ws.data?.chatUid === chatUid) ws.send(text);
+  }
+}
+
+function receiveText(body: Record<string, unknown>): Response {
+  const text = String(body.text || "").trim();
+  if (activationCodes.has(text)) {
+    const activation = activations.get(activationCodes.get(text) || "");
+    if (!activation) return error(404, "unknown activation");
+    activation.verified = true;
+    return json({ status: "verified", display_code: text, activation_secret: activation.activationSecret });
+  }
+  if (!verificationCodes.has(text)) return error(404, "unknown exact code");
+  const { chatUid, participantUid } = verificationCodes.get(text)!;
+  const chat = chats.get(chatUid);
+  if (!chat) return error(404, "unknown chat");
+  const participant = chat.participants.find((p) => (p as any).uid === participantUid) as MemberParticipant | undefined;
+  if (!participant) return error(404, "unknown participant");
+  participant.status = "active";
+  participant.provider_key = body.from ? String(body.from) : `+1555${participant.uid.slice(-6)}`;
+  participant.verified_at = new Date().toISOString();
+  participant.joined_at = participant.verified_at;
+  emit(chat.uid, {
+    type: "participant_verified",
+    participant: {
+      type: "member",
+      uid: participant.uid,
+      display_name: participant.display_name,
+      provider_key: participant.provider_key,
+      joined_at: participant.joined_at,
+    },
+  });
+  const allActive = chat.participants
+    .filter((p) => (p as any).type === "member")
+    .every((p) => (p as MemberParticipant).status === "active");
+  if (allActive) {
+    chat.status = "active";
+    emit(chat.uid, { type: "chat_active", chat: { uid: chat.uid, status: "active" } });
+  }
+  return json({ status: "verified", chat_uid: chat.uid, participant_uid: participant.uid });
 }
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: Number(process.env.PLOW_STUB_PORT || 0),
-  async fetch(req) {
+  async fetch(req, server) {
     const url = new URL(req.url);
-    if (url.pathname === "/healthz" && req.method === "GET") {
-      return json({ status: "ok" });
+    const { pathname } = url;
+    if (pathname === "/healthz" && req.method === "GET") return json({ status: "ok" });
+    if (pathname === "/_stub/calls" && req.method === "GET") return json(calls);
+    if (pathname === "/_stub/config" && req.method === "POST") {
+      const body = await parseJson(req);
+      if (body instanceof Response) return body;
+      wsCloseOnOpen = body.ws_close_on_open === true;
+      redeemErrorStatus = typeof body.redeem_error_status === "number" ? body.redeem_error_status : 0;
+      return json({ ws_close_on_open: wsCloseOnOpen, redeem_error_status: redeemErrorStatus });
     }
-    if (url.pathname === "/v1/auth/activate" && req.method === "POST") {
-      return createActivation(await parseBody(req));
+    if (pathname === "/_stub/text" && req.method === "POST") {
+      const body = await parseJson(req);
+      if (body instanceof Response) return body;
+      return receiveText(body);
     }
-    if (url.pathname === "/v1/auth/activate/redeem" && req.method === "POST") {
-      return redeemActivation(await parseBody(req));
+    if (pathname === "/v1/auth/activate" && req.method === "POST") {
+      const body = await parseJson(req);
+      if (body instanceof Response) return body;
+      return createActivation(body);
     }
-    if (url.pathname === "/_stub/text" && req.method === "POST") {
-      return receiveText(await parseBody(req));
+    if (pathname === "/v1/auth/activate/redeem" && req.method === "POST") {
+      const body = await parseJson(req);
+      if (body instanceof Response) return body;
+      return redeemActivation(body);
     }
+    if (pathname === "/v1/lines" && req.method === "GET") return listLines(req);
+    if (pathname === "/v1/chats" && req.method === "POST") {
+      const body = await parseJson(req);
+      if (body instanceof Response) return body;
+      try {
+        return createChat(req, body);
+      } catch (err) {
+        return error(400, err instanceof Error ? err.message : "invalid chat request");
+      }
+    }
+    if (pathname === "/v1/ws/ticket" && req.method === "POST") {
+      const body = await parseJson(req);
+      if (body instanceof Response) return body;
+      return mintTicket(req, body);
+    }
+    if (pathname === "/v1/ws" && req.method === "GET") {
+      const ticket = url.searchParams.get("ticket") || "";
+      const chatUid = tickets.get(ticket);
+      if (!chatUid) return error(401, "unknown or expired websocket ticket");
+      if (server.upgrade(req, { data: { chatUid } })) return undefined;
+      return error(500, "websocket upgrade failed");
+    }
+    if (pathname.startsWith("/v1/")) return error(405, "method or endpoint not allowed");
     return json({ error: "not found" }, 404);
+  },
+  websocket: {
+    open(ws) {
+      sockets.add(ws);
+      if (wsCloseOnOpen) {
+        setTimeout(() => ws.close(1011, "simulated drop"), 25);
+      }
+    },
+    close(ws) {
+      sockets.delete(ws);
+    },
   },
 });
 
