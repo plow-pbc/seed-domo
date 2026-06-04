@@ -94,6 +94,10 @@ All commands below MUST use that same `DOMO_HOME`.
 The agent SHOULD launch the dashboard when a browser is available. This is a
 soft gate: if the server, browser, or open command is unavailable, the install
 continues in the agent chat and terminal with the same piece commands.
+Every dashboard command is best-effort. The agent MUST treat any dashboard
+launch, URL lookup, browser open, or state push failure as non-fatal, ignore that
+dashboard failure for install control flow, and continue with the terminal/chat
+fallback.
 
 The dashboard is the user's primary simple progress monitor and copy-paste
 surface. It is display-only; the user does not click dashboard controls to drive
@@ -103,24 +107,24 @@ The agent initializes one dashboard state directory scoped to `DOMO_HOME`:
 
 ```bash
 export INSTALLER_STATE_DIR="$DOMO_HOME/installer-ui"
-INSTALLER_NO_OPEN=1 ref/installer/start.sh
-ref/installer/client.sh installer_reset "Setting up Domo"
-ref/installer/client.sh installer_set subtitle "Follow the current action below. This page updates automatically."
-ref/installer/client.sh installer_step login pending "Sign in to Claude"
-ref/installer/client.sh installer_step calendar pending "Connect Google Calendar"
-ref/installer/client.sh installer_step activate pending "Activate Domo by text"
-ref/installer/client.sh installer_step ready pending "Start Domo"
+INSTALLER_NO_OPEN=1 ref/installer/start.sh || true
+ref/installer/client.sh installer_reset "Setting up Domo" || true
+ref/installer/client.sh installer_set subtitle "Follow the current action below. This page updates automatically." || true
+ref/installer/client.sh installer_step login pending "Sign in to Claude" || true
+ref/installer/client.sh installer_step calendar pending "Connect Google Calendar" || true
+ref/installer/client.sh installer_step activate pending "Activate Domo by text" || true
+ref/installer/client.sh installer_step ready pending "Start Domo" || true
 ```
 
 If a browser can be opened, the agent opens the local dashboard URL:
 
 ```bash
-open "$(ref/installer/client.sh installer_url)"
+url="$(ref/installer/client.sh installer_url 2>/dev/null)" && open "$url" || true
 ```
 
 If no browser is available, the agent prints the same progress in terminal/chat
-and continues. The dashboard server is a monitor only; failure to launch it MUST
-NOT block the four verified pieces.
+and continues. The dashboard server is a monitor only; failure to launch or
+update it MUST NOT block the four verified pieces.
 
 **Step 1 - Login.**
 
@@ -146,14 +150,14 @@ tokens.
 Dashboard updates:
 
 ```bash
-ref/installer/client.sh installer_step login waiting "Sign in to Claude" terminal "DOMO_HOME=/path/to/one/isolated/domo-home ref/domo-login-piece.sh login"
+ref/installer/client.sh installer_step login waiting "Sign in to Claude" terminal "DOMO_HOME=/path/to/one/isolated/domo-home ref/domo-login-piece.sh login" || true
 ```
 
 When confirmed:
 
 ```bash
-ref/installer/client.sh installer_step login ok "Signed in to Claude"
-ref/installer/client.sh installer_step calendar active "Checking Google Calendar"
+ref/installer/client.sh installer_step login ok "Signed in to Claude" || true
+ref/installer/client.sh installer_step calendar active "Checking Google Calendar" || true
 ```
 
 **Step 2 - Calendar.**
@@ -189,20 +193,20 @@ Dashboard updates:
 Before probing:
 
 ```bash
-ref/installer/client.sh installer_step calendar active "Checking Google Calendar"
+ref/installer/client.sh installer_step calendar active "Checking Google Calendar" || true
 ```
 
 If the probe reports `NOT_CONNECTED`, show exactly one browser action:
 
 ```bash
-ref/installer/client.sh installer_step calendar waiting "Connect Google Calendar" browser "https://claude.ai/customize/connectors"
+ref/installer/client.sh installer_step calendar waiting "Connect Google Calendar" browser "https://claude.ai/customize/connectors" || true
 ```
 
 When connected:
 
 ```bash
-ref/installer/client.sh installer_step calendar ok "Google Calendar connected"
-ref/installer/client.sh installer_step activate active "Preparing text activation"
+ref/installer/client.sh installer_step calendar ok "Google Calendar connected" || true
+ref/installer/client.sh installer_step activate active "Preparing text activation" || true
 ```
 
 **Step 3 - Solo Plow activation.**
@@ -239,7 +243,7 @@ Dashboard updates:
 While requesting activation:
 
 ```bash
-ref/installer/client.sh installer_step activate active "Preparing text activation"
+ref/installer/client.sh installer_step activate active "Preparing text activation" || true
 ```
 
 After the agent parses the activation `CODE` and `NUMBER` from the activation
@@ -247,8 +251,8 @@ piece output, it relays them to the user in chat and pushes the same public
 copy-paste data to the dashboard:
 
 ```bash
-ref/installer/client.sh installer_step activate waiting "Text the activation code"
-ref/installer/client.sh installer_verify "You" pending "CODE" "NUMBER" self
+ref/installer/client.sh installer_step activate waiting "Text the activation code" || true
+ref/installer/client.sh installer_verify "You" pending "CODE" "NUMBER" self || true
 ```
 
 The dashboard MUST NOT receive activation secrets or the Plow Bearer token. It
@@ -258,9 +262,9 @@ user must text.
 When verified:
 
 ```bash
-ref/installer/client.sh installer_verify "You" verified "" "" self
-ref/installer/client.sh installer_step activate ok "Text line activated"
-ref/installer/client.sh installer_step ready active "Starting Domo"
+ref/installer/client.sh installer_verify "You" verified "" "" self || true
+ref/installer/client.sh installer_step activate ok "Text line activated" || true
+ref/installer/client.sh installer_step ready active "Starting Domo" || true
 ```
 
 **Step 4 - Ready.**
@@ -285,14 +289,14 @@ Dashboard updates:
 Before running the ready piece:
 
 ```bash
-ref/installer/client.sh installer_step ready active "Starting Domo"
+ref/installer/client.sh installer_step ready active "Starting Domo" || true
 ```
 
 When the ready text is sent:
 
 ```bash
-ref/installer/client.sh installer_step ready ok "Domo is running"
-ref/installer/client.sh installer_done "Domo is live - check your phone for the ready text."
+ref/installer/client.sh installer_step ready ok "Domo is running" || true
+ref/installer/client.sh installer_done "Domo is live - check your phone for the ready text." || true
 ```
 
 ### Domo is activated
