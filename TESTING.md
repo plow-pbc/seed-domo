@@ -2,31 +2,26 @@
 
 ## Automated E2E
 
-Run the committed install repro:
+Run the committed piece verification repro:
 
 ```bash
 ref/installer/e2e-install.sh
 ```
 
-It runs a solo install and a group install with two members. Both enter through
-the live install action, `ref/installer/domo-install.sh`, against the local Plow
-stub. The runner asserts:
+It runs the deterministic checks available without a real Claude subscription or
+SMS provider:
 
-- the installer reaches `ready=true`;
-- the daemon is alive;
-- the real `ref/channels/plow-chat/server.ts` receives a stub WSS inbound
-  `message_received` frame, emits the Claude channel notification, and sends an
-  outbound reply through its real `reply` tool (`POST /v1/chats/{uid}/messages`);
-- the Plow API call sequence matches the solo/group path;
-- `.claude/plow-chat/state.json` is chmod 600 and contains exactly
-  `{base_url, token, chat_uid}`;
-- the final install state reflects the chosen solo/group activation.
+- `bash ref/verify.sh` for structural SEED conformance;
+- `ref/domo-activate-piece.sh selftest` for Plow activation mechanics against the
+  local stub;
+- `ref/domo-ready-piece.sh selftest` for config authoring, channel connection,
+  daemon startup, and the first ready text against the local stub.
 
 Coverage gap: the E2E uses a fake Claude CLI for deterministic login/preflight
 and a direct MCP client as the Claude host for the channel round-trip. It proves
-the install action, Plow stub, real channel server inbound delivery, and real
-reply send path. It does not prove Claude Code's proprietary host loads the MCP
-registration or that an LLM chooses to call `reply`.
+the Plow stub, real channel server inbound delivery, and real reply send path.
+It does not prove a human completed the SEED action, Claude Code's proprietary
+host loads the MCP registration, or that an LLM chooses to call `reply`.
 
 ## Plow Stub
 
@@ -37,10 +32,11 @@ PLOW_STUB_STATE_DIR=/tmp/domo-plow-stub bun run ref/installer/plow-stub.ts
 base_url="$(jq -r .base_url /tmp/domo-plow-stub/server-info)"
 ```
 
-Then point an install at it:
+Then point the activation or ready piece at it with the same Domo home the SEED
+action is using:
 
 ```bash
-PLOW_CHAT_BASE_URL="$base_url" ref/installer/domo-install.sh
+DOMO_HOME="$HOME/.domo" PLOW_CHAT_BASE_URL="$base_url" ref/domo-activate-piece.sh activate
 ```
 
 The stub exposes `/v1/auth/activate`, `/v1/auth/activate/redeem`,
@@ -51,55 +47,38 @@ sequence.
 
 ## Dashboard Manual Smoke
 
-1. Start a fresh install through the SEED path or directly through the live
-   driver for local smoke:
+1. Start a fresh install through the SEED path:
 
    ```bash
-   ref/installer/domo-install.sh
+   export DOMO_HOME="$HOME/.domo"
    ```
 
-2. Confirm the dashboard opens quickly after the tooling check.
+2. Launch the display-only dashboard as described in `SEED.md` Phase 0.
 
-3. Before answering the terminal question, confirm the dashboard banner says:
+3. Confirm the login and Calendar rows appear immediately:
 
-   ```text
-   One quick question is waiting in your terminal — answer it to continue.
-   ```
-
-4. Confirm the login and Calendar rows appear immediately:
-
-   - login row shows the exact resolved `$DOMO login` command (default
-     `ref/domo login`) and says to run it in a new terminal;
+   - login row shows the exact
+     `DOMO_HOME="$HOME/.domo" ref/domo-login-piece.sh login` command and says to
+     run it in a new terminal;
    - Calendar row links to `https://claude.ai/customize/connectors`.
 
-5. Answer the terminal question:
+4. Complete Claude login and Calendar connector setup, then confirm both rows
+   flip to complete only after the corresponding piece reports success.
+
+5. Confirm the activation row appears with one code/number row for `You`.
+
+6. Complete the activation by texting the displayed code. For local stub smoke,
+   post the exact code to `/_stub/text`.
+
+7. Confirm the activation row flips to verified and the Plow step becomes
+   complete only after the activation piece reports `VERIFIED`.
+
+8. Confirm the ready state shows:
 
    ```text
-   solo
+   Domo is live - check your phone for the ready text.
    ```
 
-   or:
-
-   ```text
-   group: Pat, Riley
-   ```
-
-6. Confirm activation rows appear:
-
-   - solo shows one code/number row for `You`;
-   - group shows the owner row, then one row per household member.
-
-7. Complete the activation by texting the displayed code(s). For local stub
-   smoke, post exact codes to `/_stub/text`.
-
-8. Confirm activation rows flip to verified independently and the Plow step
-   becomes complete only after all required rows are verified.
-
-9. Confirm the ready state shows:
-
-   ```text
-   Domo is live — text <number> to talk to it.
-   ```
-
-10. Confirm the terminal reports success and `ref/domo status` shows the daemon
-    alive with `plow-chat state: present` and no token value printed.
+9. Confirm the terminal reports success and `ref/domo-ready-piece.sh status`
+   shows the daemon alive with `plow-chat state: present` and no token value
+   printed.

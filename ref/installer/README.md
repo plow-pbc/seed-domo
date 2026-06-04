@@ -26,9 +26,9 @@ keep it small.
 - `plow-stub.ts` — runnable Plow API/WSS fixture for install E2E. Covers solo
   activation, group chat creation, member verification frames, and ordered call
   recording.
-- `e2e-install.sh` — committed solo+group E2E runner. It enters through
-  `domo-install.sh`, points it at `plow-stub.ts`, and asserts ready state, call
-  order, daemon liveness, and chmod-600 channel state shape.
+- `e2e-install.sh` — committed piece verification runner. It runs structural
+  SEED checks plus the activation and ready piece selftests against
+  `plow-stub.ts`.
 
 ## Running
 
@@ -65,7 +65,7 @@ Point Domo activation at it:
 
 ```bash
 base_url="$(jq -r .base_url /tmp/domo-plow-stub/server-info)"
-PLOW_CHAT_BASE_URL="$base_url" ref/installer/domo-install.sh
+DOMO_HOME="$HOME/.domo" PLOW_CHAT_BASE_URL="$base_url" ref/domo-activate-piece.sh activate
 ```
 
 Covered Plow endpoints:
@@ -90,12 +90,10 @@ Test helper endpoints:
 | `POST` | `/_stub/config` | Set `ws_close_on_open`, `redeem_error_status`, or `response_delay_ms`. |
 | `GET` | `/_stub/calls` | Return counters and ordered Plow API call sequence. |
 
-Run the committed E2E:
+Run the committed verification runner:
 
 ```bash
-ref/installer/e2e-install.sh        # solo + group
-ref/installer/e2e-install.sh solo
-ref/installer/e2e-install.sh group
+ref/installer/e2e-install.sh
 ```
 
 ### Driving it (one-liners — no hand-built JSON)

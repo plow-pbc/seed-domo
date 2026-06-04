@@ -14,13 +14,13 @@ back into the same texting thread.
 
 Domo is delivered as a **SEED**: a descriptive knowledge base plus a working
 reference implementation that an installing agent uses to stand up a live Domo.
-The install asks one setup question up front: solo, or group, and if group, who
-is in the household. That answer changes the activation path and the authored
-workspace. The rest of the install is a front-loaded action board: the agent does
-the API calls and verification, while you only complete the human-only actions.
+This slice installs one solo household line. The install is a front-loaded
+action board: the agent does the API calls and verification, while you only
+complete the human-only actions.
 
 `ref/` is the implementation reference: the install dashboard, the `domo` CLI,
-the Plow Chat channel, and the bootstrap driver that ties them together.
+the Plow Chat channel, and the four verified piece scripts that the SEED action
+runs.
 
 ## Install
 
@@ -40,27 +40,24 @@ git clone https://github.com/plow-pbc/seed-domo && cd seed-domo
 Then run `/seed-install https://github.com/plow-pbc/seed-domo`, or open the
 checkout and ask the agent to install this SEED.
 
-The SEED install action invokes the live bootstrap driver:
+The SEED install action is the install path. It pins the persistent Domo home
+outside the checkout:
 
 ```bash
-ref/installer/domo-install.sh
+export DOMO_HOME="$HOME/.domo"
 ```
 
-That driver is the install, not a demo path. It runs the phased flow:
+Then the installing agent follows `SEED.md` and runs the four verified pieces in
+order:
 
-1. **Bootstrap fast.** Check `bun`, `jq`, `expect`, and Claude Code >= 2.1.80;
-   run `ref/domo setup`; launch the local dashboard.
-2. **Front-load inputs.** Ask the one terminal question: solo or group, and if
-   group, member names. The dashboard simultaneously shows the exact human-only
-   actions: run `domo login` in a new terminal, enable Google Calendar at
-   `https://claude.ai/customize/connectors`, and text the Plow verification
-   code(s) when shown.
-3. **Preflight and build while away.** The installer owns
-   `$DOMO_HOME/install-state.json`, retries the login/calendar preflight until it
-   can verify both from inside the Domo session, then authors the workspace,
-   wires Plow Chat, and starts the daemon.
-4. **Ready.** The dashboard reaches done when Domo is live:
-   `Domo is live - text <number> to talk to it.`
+1. **Login.** `ref/domo-login-piece.sh` creates isolated Claude subscription
+   auth under `$DOMO_HOME/.claude`.
+2. **Calendar.** `ref/domo-calendar-piece.sh` verifies the claude.ai Google
+   Calendar connector for that same account.
+3. **Activation.** `ref/domo-activate-piece.sh` performs the Plow text
+   activation and writes chmod-600 channel state.
+4. **Ready.** `ref/domo-ready-piece.sh` authors the workspace, starts the daemon,
+   and sends the first ready text.
 
 The only things you do are the interactive subscription login, the browser
 connector toggle, and texting verification codes from the relevant phone(s).
@@ -72,6 +69,7 @@ printed as secrets.
 After install, Domo runs as one pinned, persistent session. The reference CLI is:
 
 ```bash
+export DOMO_HOME="$HOME/.domo"
 ref/domo setup       # isolated dirs, workspace, pinned session UUID
 ref/domo activate    # Plow activation; normally run by the installer
 ref/domo login       # interactive Claude subscription login in this instance

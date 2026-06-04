@@ -3,7 +3,7 @@
 // Run:
 //   PLOW_STUB_STATE_DIR=/tmp/domo-plow-stub bun run ref/installer/plow-stub.ts
 //   base_url="$(jq -r .base_url /tmp/domo-plow-stub/server-info)"
-//   PLOW_CHAT_BASE_URL="$base_url" ref/installer/domo-install.sh
+//   DOMO_HOME="$HOME/.domo" PLOW_CHAT_BASE_URL="$base_url" ref/domo-activate-piece.sh activate
 //
 // Covered Plow endpoints:
 //   POST /v1/auth/activate

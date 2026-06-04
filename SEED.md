@@ -13,7 +13,8 @@ declaration and MUST NOT re-declare it.
 
 `seed-domo` stands up one live, text-reachable Domo on the user's Mac. The
 install action is agent-driven: an installing agent reads this `SEED.md` and runs
-the verified piece scripts in `ref/` against one isolated `DOMO_HOME`.
+the verified piece scripts in `ref/` against the dedicated persistent
+`DOMO_HOME=$HOME/.domo`.
 
 Hard dependencies:
 
@@ -41,13 +42,15 @@ missing dependency it cannot resolve.
 
 - **The installing agent** - the agent executing this SEED install action. It
   runs shell commands, relays user actions in chat, polls piece status, and keeps
-  one `DOMO_HOME` threaded through every step.
+  `DOMO_HOME=$HOME/.domo` threaded through every step.
 - **The user** - the human installing Domo. The user performs only the human
   auth and texting steps: complete Claude login when asked, connect Google
   Calendar if needed, and text one Plow activation code.
-- **`DOMO_HOME`** - the one isolated Domo home for the install. The agent MUST
-  choose or ask for exactly one path and pass `DOMO_HOME=<that path>` to every
-  piece command. The isolated Claude config is `$DOMO_HOME/.claude`.
+- **`DOMO_HOME`** - the dedicated persistent Domo home for the install:
+  `$HOME/.domo`. The agent MUST set and use exactly `DOMO_HOME=$HOME/.domo` for
+  every piece command. The agent MUST NOT use the SEED checkout, any path inside
+  the SEED checkout, or a temp directory as `DOMO_HOME`. The isolated Claude
+  config is `$DOMO_HOME/.claude`.
 - **Login piece** - `ref/domo-login-piece.sh`. It owns isolated Claude
   subscription login detection.
 - **Calendar piece** - `ref/domo-calendar-piece.sh`. It owns the Google Calendar
@@ -78,16 +81,17 @@ missing dependency it cannot resolve.
 ### Domo is installed
 
 This action installs the solo Domo slice. The installing agent MUST run the four
-verified pieces below in order against one `DOMO_HOME`. The agent MUST NOT
-reimplement piece internals.
+verified pieces below in order against `DOMO_HOME=$HOME/.domo`. The agent MUST
+NOT reimplement piece internals.
 
-Before starting, the agent chooses the install home and shows it:
+Before starting, the agent sets the fixed install home and shows it:
 
 ```bash
-export DOMO_HOME=/path/to/one/isolated/domo-home
+export DOMO_HOME="$HOME/.domo"
 ```
 
-All commands below MUST use that same `DOMO_HOME`.
+All commands below MUST use that same `DOMO_HOME`. The agent MUST NOT substitute
+the SEED repo path or a temp directory.
 
 **Phase 0 - Display-only dashboard.**
 
@@ -133,14 +137,14 @@ Who runs what:
 - The agent tells the user to run this command in their own terminal:
 
   ```bash
-  DOMO_HOME=/path/to/one/isolated/domo-home ref/domo-login-piece.sh login
+  DOMO_HOME=$HOME/.domo ref/domo-login-piece.sh login
   ```
 
 - The user completes the browser-based Claude subscription login.
 - The agent polls until login is confirmed:
 
   ```bash
-  DOMO_HOME=/path/to/one/isolated/domo-home ref/domo-login-piece.sh status
+  DOMO_HOME=$HOME/.domo ref/domo-login-piece.sh status
   ```
 
 Done when the status output reports `CONFIRMED`. If status is not confirmed, the
@@ -150,7 +154,7 @@ tokens.
 Dashboard updates:
 
 ```bash
-ref/installer/client.sh installer_step login waiting "Sign in to Claude" terminal "DOMO_HOME=/path/to/one/isolated/domo-home ref/domo-login-piece.sh login" || true
+ref/installer/client.sh installer_step login waiting "Sign in to Claude" terminal "DOMO_HOME=$HOME/.domo ref/domo-login-piece.sh login" || true
 ```
 
 When confirmed:
@@ -167,7 +171,7 @@ Who runs what:
 - The agent probes the connector:
 
   ```bash
-  DOMO_HOME=/path/to/one/isolated/domo-home ref/domo-calendar-piece.sh check
+  DOMO_HOME=$HOME/.domo ref/domo-calendar-piece.sh check
   ```
 
 - If the result is `CONNECTED`, continue.
@@ -181,7 +185,7 @@ Who runs what:
 - After the user says it is connected, the agent re-runs:
 
   ```bash
-  DOMO_HOME=/path/to/one/isolated/domo-home ref/domo-calendar-piece.sh check
+  DOMO_HOME=$HOME/.domo ref/domo-calendar-piece.sh check
   ```
 
 Done when the calendar piece reports `CONNECTED`. The agent MUST keep retrying
@@ -216,7 +220,7 @@ Who runs what:
 - The agent starts real solo activation:
 
   ```bash
-  DOMO_HOME=/path/to/one/isolated/domo-home ref/domo-activate-piece.sh activate
+  DOMO_HOME=$HOME/.domo ref/domo-activate-piece.sh activate
   ```
 
 - The activation piece prints an activation code and target number.
@@ -274,7 +278,7 @@ Who runs what:
 - The agent runs:
 
   ```bash
-  DOMO_HOME=/path/to/one/isolated/domo-home ref/domo-ready-piece.sh ready
+  DOMO_HOME=$HOME/.domo ref/domo-ready-piece.sh ready
   ```
 
 The ready piece authors the default solo Domo config, registers the Plow chat
@@ -304,7 +308,7 @@ ref/installer/client.sh installer_done "Domo is live - check your phone for the 
 Solo activation is owned by:
 
 ```bash
-DOMO_HOME=/path/to/one/isolated/domo-home ref/domo-activate-piece.sh activate
+DOMO_HOME=$HOME/.domo ref/domo-activate-piece.sh activate
 ```
 
 It performs:
@@ -323,7 +327,7 @@ and never committed.
 Runtime startup is owned by:
 
 ```bash
-DOMO_HOME=/path/to/one/isolated/domo-home ref/domo-ready-piece.sh ready
+DOMO_HOME=$HOME/.domo ref/domo-ready-piece.sh ready
 ```
 
 The ready piece writes a lean default Domo config for a solo household, starts
@@ -362,13 +366,13 @@ bash ref/verify.sh
 1. Login piece status confirms subscription auth:
 
    ```bash
-   DOMO_HOME=/path/to/one/isolated/domo-home ref/domo-login-piece.sh status
+   DOMO_HOME=$HOME/.domo ref/domo-login-piece.sh status
    ```
 
 2. Calendar piece confirms the connector:
 
    ```bash
-   DOMO_HOME=/path/to/one/isolated/domo-home ref/domo-calendar-piece.sh check
+   DOMO_HOME=$HOME/.domo ref/domo-calendar-piece.sh check
    ```
 
 3. Activation piece validates Plow activation mechanics against the stub:

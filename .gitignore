@@ -1,10 +1,10 @@
-# Domo's isolated Claude home (DOMO_HOME defaults to this checkout for the POC).
-# Holds ALL instance state: active settings.json, OAuth/connector auth, installed
-# plugins, MCP config, channel config, session history. NEVER track any of it.
+# Accidental checkout-scoped Domo runtime state. DOMO_HOME is $HOME/.domo; the
+# repo root must not be used as a runtime home. NEVER track any of this.
 /.claude/
 
 # Dedicated, scoped agent workspace (`start` runs from here).
 /workspace/
+/calendar-check-workspace/
 
 # Local design notes / specs — working history, not part of the published SEED.
 /docs/

@@ -38,10 +38,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# DOMO_HOME is the isolated Claude home for this instance. Defaults to THIS checkout,
-# so Domo's config / auth / sessions / plugins / channel state live entirely inside
-# the project (under .claude/, which is gitignored). Override to relocate (e.g. ~/domo).
-DOMO_HOME="${DOMO_HOME:-$REPO_ROOT}"
+# DOMO_HOME is the isolated Claude home for this instance. It defaults to a
+# dedicated persistent home outside the checkout so repo installs never write
+# runtime state into the source tree.
+DOMO_HOME="${DOMO_HOME:-$HOME/.domo}"
 CONFIG_DIR="$DOMO_HOME/.claude"
 WORKSPACE="$DOMO_HOME/workspace"
 
@@ -1815,7 +1815,7 @@ Commands:
 
 Environment:
   DOMO_CHANNEL            plow-chat (default)
-  DOMO_HOME              base dir; default: this checkout
+  DOMO_HOME              base dir; default: $HOME/.domo
   DOMO_PERMISSION_MODE   permission mode; default 'auto'
   CLAUDE_CODE_OAUTH_TOKEN  optional headless subscription token
   PLOW_CHAT_BASE_URL     Plow API base for activate (default https://api.plow.co)
