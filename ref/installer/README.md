@@ -20,9 +20,9 @@ keep it small.
   object holds. Hardcodes nothing about Domo.
 - `start.sh` — **one command** to bring the dashboard up: launches the server
   detached, waits for it, opens the browser, and prints the drive recipe.
-- `client.sh` — shell helper. Low-level (`installer_push '<state>'`,
-  `installer_wait_answers`) **and** a one-liner **verb layer** that keeps cumulative
-  state in a file so a driver updates one thing at a time (see *Driving it*).
+- `client.sh` — shell helper. Low-level (`installer_push '<state>'`) **and** a
+  one-liner **verb layer** that keeps cumulative state in a file so a driver updates
+  one thing at a time (see *Driving it*).
 - `demo.sh` — a self-contained happy-path driver used to validate the installer
   end-to-end (drives all phases; Plow steps hit a configurable base URL).
 
@@ -58,8 +58,7 @@ The server binds **127.0.0.1** on an **ephemeral port**, mints a random URL
 ```json
 { "url": "http://127.0.0.1:PORT", "port": PORT, "token": "<rand>",
   "events_url": "http://127.0.0.1:PORT/s/<rand>/events",
-  "state_url":  "http://127.0.0.1:PORT/s/<rand>/state",
-  "answers_url":"http://127.0.0.1:PORT/s/<rand>/answers" }
+  "state_url":  "http://127.0.0.1:PORT/s/<rand>/state" }
 ```
 
 A driver opens `url` in the browser (`open <url>` on macOS) and uses the other URLs.
@@ -72,13 +71,11 @@ A driver opens `url` in the browser (`open <url>` on macOS) and uses the other U
 | `GET` | `/app.js`, `/style.css` | — | Static assets. |
 | `GET` | `/s/<token>/events` | token in path | **SSE**. Emits `data: <state-json>\n\n` on connect and on every change. |
 | `POST` | `/s/<token>/state` | token in path | Driver pushes the **full** state object (JSON). Replaces state, broadcasts over SSE. |
-| `POST` | `/s/<token>/answers` | token in path | The **page** submits the form. Stores it, sets `form.submitted=true`, broadcasts. |
-| `GET` | `/s/<token>/answers` | token in path | Driver reads submitted answers: `{ "submitted": bool, "values": {…} }`. |
 | `GET` | `/healthz` | — | `{"status":"ok"}`. |
 
-The `<token>` path segment guards state/answers/events so another local process
-can't read or inject. The SPA learns the token from the injected page; the driver
-reads it from `server-info`.
+The `<token>` path segment guards state/events so another local process can't read
+or inject. The SPA learns the token from the injected page; the driver reads it
+from `server-info`.
 
 ## The state object (the contract)
 
@@ -105,17 +102,6 @@ below).
       }
     }
   ],
-  "form": {                                 // present when the page should collect input; else null
-    "title": "Choose your chat",
-    "intro": "Just you, or a household group?",
-    "fields": [
-      { "id":"mode", "label":"Chat type", "type":"choice",
-        "options":["Just me","Household group"], "required":true, "value":null },
-      { "id":"members", "label":"Who else is in it?", "type":"list",
-        "placeholder":"Name", "value":[] }
-    ],
-    "submitted": false
-  },
   "verification": [                          // present on the verify step; else null
     { "name":"Patrick", "isSelf":true,  "status":"verified" },
     { "name":"Sarah",   "isSelf":false, "status":"pending",
@@ -127,8 +113,7 @@ below).
 ```
 
 Enums: `status` ∈ `pending|waiting|active|ok|error`; `where` ∈
-`terminal|browser|phone|other`; field `type` ∈ `text|choice|multiline|list`;
-verification `status` ∈ `pending|verified|error`.
+`terminal|browser|phone|other`; verification `status` ∈ `pending|verified|error`.
 
 ### Rendering rules (SPA)
 
@@ -137,7 +122,6 @@ verification `status` ∈ `pending|verified|error`.
 - A `waiting` step with `action` expands into a card: a mono "↳ where" label, the
   `instruction`, and — for `where:"terminal"` — a **dark command box** containing
   `command` with a **Copy** button; for `where:"browser"`, a labeled link button.
-- `form` renders the fields; **Submit** `POST`s `/answers`.
 - `verification` renders one row per member: avatar, name, (for non-self) the `code`
   in a chip with **Copy** + the `number` to text, and a live status (spinner →
   ✓ Verified), over a "N of M verified" progress bar.
@@ -153,5 +137,5 @@ verification `status` ∈ `pending|verified|error`.
   secret-looking value). Verification `code`s (`VERIFY-…`, one-time, meant to be
   shown) are allowed.
 - Bind `127.0.0.1` only; ephemeral port; random path token; in-memory state only;
-  no persistence of state or answers to disk beyond `server-info`.
+  no persistence of state to disk beyond `server-info`.
 - The process is ephemeral — a driver kills it when the install reaches `done`.

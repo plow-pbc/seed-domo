@@ -28,12 +28,6 @@ const APP_DIR = new URL("./app/", import.meta.url).pathname;
 let state: unknown = null;
 let doneExitScheduled = false;
 
-// The submitted form. `submitted` flips to true once the page POSTs /answers.
-let answers: { submitted: boolean; values: unknown } = {
-  submitted: false,
-  values: null,
-};
-
 // Connected SSE clients. Each entry can push an already-encoded "data: …\n\n"
 // frame to one browser. We fan state changes out to all of them.
 type SseClient = { send: (chunk: string) => void; close: () => void };
@@ -257,35 +251,6 @@ async function handleState(req: Request): Promise<Response> {
   return json({ ok: true });
 }
 
-async function handleAnswersPost(req: Request): Promise<Response> {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return json({ error: "invalid JSON" }, 400);
-  }
-  // Accept either a bare field-map or a {values:{...}} envelope, and store the
-  // field map DIRECTLY (per the contract: GET /answers returns values = the map).
-  const values =
-    body && typeof body === "object" && "values" in (body as Record<string, unknown>)
-      ? (body as Record<string, unknown>).values
-      : body;
-  answers = { submitted: true, values };
-  // Reflect submission in the live state so the page updates, if a form exists.
-  if (state && typeof state === "object") {
-    const s = state as Record<string, unknown>;
-    if (s.form && typeof s.form === "object") {
-      (s.form as Record<string, unknown>).submitted = true;
-    }
-  }
-  broadcastState();
-  return json({ ok: true });
-}
-
-function handleAnswersGet(): Response {
-  return json({ submitted: answers.submitted, values: answers.values });
-}
-
 // ---------------------------------------------------------------------------
 // Router.
 // ---------------------------------------------------------------------------
@@ -327,10 +292,6 @@ const server = Bun.serve({
       if (action === "state" && req.method === "POST") {
         return handleState(req);
       }
-      if (action === "answers") {
-        if (req.method === "POST") return handleAnswersPost(req);
-        if (req.method === "GET") return handleAnswersGet();
-      }
       return json({ error: "not found" }, 404);
     }
 
@@ -350,7 +311,6 @@ const serverInfo = {
   token: TOKEN,
   events_url: `${base}/s/${TOKEN}/events`,
   state_url: `${base}/s/${TOKEN}/state`,
-  answers_url: `${base}/s/${TOKEN}/answers`,
 };
 
 // Agent/SEED-agnostic storage dir. INSTALLER_STATE_DIR is the canonical name;

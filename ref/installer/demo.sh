@@ -61,7 +61,6 @@ phase_preflight() {
       { "id": "preflight", "label": "Check tooling", "status": "ok",
         "detail": "bun, jq, expect, claude 2.1.80 — all present" }
     ],
-    "form": null,
     "verification": null,
     "done": false
   }'
@@ -79,7 +78,6 @@ phase_scaffold() {
       { "id": "scaffold", "label": "Scaffold the Domo project", "status": "ok",
         "detail": "Cloned seed-domo and ran domo setup" }
     ],
-    "form": null,
     "verification": null,
     "done": false
   }'
@@ -99,7 +97,6 @@ phase_connector() {
       { "id": "connector", "label": "Enable Google Calendar connector", "status": "ok",
         "detail": "Calendar tools detected" }
     ],
-    "form": null,
     "verification": null,
     "done": false
   }'
@@ -126,18 +123,17 @@ phase_login_waiting() {
           "command": "~/domo/seed-domo/ref/domo login"
         } }
     ],
-    "form": null,
     "verification": null,
     "done": false
   }'
 }
 
-phase_chat_form() {
-  log "phase: chat form"
+phase_chat_prompt() {
+  log "phase: chat prompt"
   push '{
     "title": "Setting up Domo",
     "kicker": "Setting up · step 5 of 7",
-    "subtitle": "Tell Domo who its chat is for.",
+    "subtitle": "The chat-shape question stays in the terminal.",
     "steps": [
       { "id": "preflight", "label": "Check tooling", "status": "ok",
         "detail": "bun, jq, expect, claude 2.1.80 — all present" },
@@ -148,19 +144,8 @@ phase_chat_form() {
       { "id": "login", "label": "Sign in to Claude", "status": "ok",
         "detail": "Signed in on your subscription" },
       { "id": "chat", "label": "Choose your chat", "status": "active",
-        "detail": "Fill in the form to continue" }
+        "detail": "Answer the one terminal question" }
     ],
-    "form": {
-      "title": "Choose your chat",
-      "intro": "Just you, or a household group?",
-      "fields": [
-        { "id": "mode", "label": "Chat type", "type": "choice",
-          "options": ["Just me", "Household group"], "required": true, "value": null },
-        { "id": "members", "label": "Who else is in it?", "type": "list",
-          "placeholder": "Name", "value": [] }
-      ],
-      "submitted": false
-    },
     "verification": null,
     "done": false
   }'
@@ -193,7 +178,6 @@ phase_verify_panel() {
       { "id": "verify", "label": "Verify each member", "status": "'"$([ "$member_status" = verified ] && echo ok || echo active)"'",
         "detail": "Text the code from each person'\''s phone" }
     ],
-    "form": null,
     "verification": [
       { "name": "Patrick", "isSelf": true, "status": "verified" },
       { "name": "'"$name"'", "isSelf": false, "status": "'"$member_status"'",
@@ -204,31 +188,18 @@ phase_verify_panel() {
   }'
 }
 
-phase_persona_form() {
-  log "phase: persona form"
+phase_persona_defaults() {
+  log "phase: persona defaults"
   push '{
     "title": "Setting up Domo",
     "kicker": "Setting up · step 7 of 7",
-    "subtitle": "Give Domo its personality and house rules.",
+    "subtitle": "Applying sensible defaults before building.",
     "steps": [
       { "id": "verify", "label": "Verify each member", "status": "ok",
         "detail": "Everyone verified" },
       { "id": "persona", "label": "Persona & trust", "status": "active",
-        "detail": "Fill in the form to continue" }
+        "detail": "Defaults selected by the installer" }
     ],
-    "form": {
-      "title": "Persona & trust",
-      "intro": "How should Domo show up, and what may it do on its own?",
-      "fields": [
-        { "id": "name", "label": "What should Domo call itself?", "type": "text",
-          "placeholder": "Domo", "required": true, "value": null },
-        { "id": "tone", "label": "Tone", "type": "choice",
-          "options": ["Warm", "Concise", "Playful"], "required": true, "value": null },
-        { "id": "house_rules", "label": "House rules", "type": "multiline",
-          "placeholder": "e.g. Never book over a calendar block without asking.", "value": null }
-      ],
-      "submitted": false
-    },
     "verification": null,
     "done": false
   }'
@@ -246,7 +217,6 @@ phase_building() {
       { "id": "building", "label": "Building your Domo", "status": "active",
         "detail": "Authoring and starting Domo…" }
     ],
-    "form": null,
     "verification": null,
     "done": false
   }'
@@ -264,7 +234,6 @@ phase_done() {
       { "id": "live", "label": "Domo is live", "status": "ok",
         "detail": "Text '"$SIM_LINE_NUMBER"' to talk to it" }
     ],
-    "form": null,
     "verification": null,
     "message": "Domo is live — text '"$SIM_LINE_NUMBER"' to talk to it.",
     "done": true
@@ -396,7 +365,7 @@ main() {
   phase_scaffold
   phase_connector
   phase_login_waiting
-  phase_chat_form
+  phase_chat_prompt
 
   # Verification: real leg if a token is present, else simulated.
   if [ -n "${DOMO_PLOW_TOKEN:-}" ]; then
@@ -411,7 +380,7 @@ main() {
     phase_verify_panel "Sarah" "VERIFY-EF34GH" "$SIM_LINE_NUMBER" verified
   fi
 
-  phase_persona_form
+  phase_persona_defaults
   phase_building
   phase_done
 

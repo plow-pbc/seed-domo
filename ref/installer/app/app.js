@@ -10,7 +10,6 @@
  *   - read the token the server injected into the page (window.__TOKEN__)
  *   - open an EventSource to /s/<token>/events
  *   - on each `data: <state-json>` message, re-render the whole page
- *   - forms POST JSON back to /s/<token>/answers
  */
 
 (function () {
@@ -22,17 +21,9 @@
   if (TOKEN === "%TOKEN%") TOKEN = "";
   var BASE = "/s/" + encodeURIComponent(TOKEN);
   var EVENTS_URL = BASE + "/events";
-  var ANSWERS_URL = BASE + "/answers";
 
   var contentEl = document.getElementById("content");
   var headerTitleEl = document.getElementById("hd-title");
-
-  // Holds in-progress form edits keyed by field id, so a re-render driven by a
-  // status flip elsewhere doesn't wipe what the user is typing. Reset when a
-  // fresh (unsubmitted) form arrives the first time or after submit.
-  var formDraft = null;       // { fieldId: value }
-  var formDraftKey = null;    // signature of the form we're drafting against
-  var submitting = false;
 
   // ---- small DOM helpers -------------------------------------------------
   function el(tag, opts, children) {
@@ -120,9 +111,6 @@
     }
     if (state.verification && Array.isArray(state.verification) && state.verification.length) {
       contentEl.appendChild(renderVerification(state.verification));
-    }
-    if (state.form) {
-      contentEl.appendChild(renderForm(state.form));
     }
   }
 
@@ -257,246 +245,6 @@
     } catch (e) {
       return "Open link";
     }
-  }
-
-  // ---- form --------------------------------------------------------------
-
-  function formSignature(form) {
-    // Identify "the same form" so drafts persist across unrelated re-renders.
-    var ids = (form.fields || []).map(function (f) { return f.id + ":" + f.type; });
-    return (form.title || "") + "|" + ids.join(",");
-  }
-
-  function ensureDraft(form) {
-    var sig = formSignature(form);
-    if (formDraftKey !== sig) {
-      // New form: seed the draft from supplied values.
-      formDraft = {};
-      formDraftKey = sig;
-      (form.fields || []).forEach(function (f) {
-        if (f.type === "list") {
-          formDraft[f.id] = Array.isArray(f.value) ? f.value.slice() : [];
-        } else if (f.type === "choice") {
-          formDraft[f.id] = (f.value != null) ? f.value : null;
-        } else {
-          formDraft[f.id] = (f.value != null) ? f.value : "";
-        }
-      });
-    }
-    return formDraft;
-  }
-
-  function renderForm(form) {
-    var draft = ensureDraft(form);
-    var wrap = el("div", { class: "form" });
-
-    if (form.title) wrap.appendChild(el("div", { class: "form-title", text: form.title }));
-    if (form.intro) wrap.appendChild(el("div", { class: "form-intro", text: form.intro }));
-
-    var fields = Array.isArray(form.fields) ? form.fields : [];
-
-    if (form.submitted) {
-      // Already submitted: show fields read-only-ish is overkill; show a note.
-      fields.forEach(function (f) { wrap.appendChild(renderField(f, draft, true)); });
-      var note = el("div", { class: "submitted-note" });
-      note.appendChild(el("div", { class: "check", text: "✓" }));
-      note.appendChild(document.createTextNode("Submitted — thanks."));
-      wrap.appendChild(note);
-      return wrap;
-    }
-
-    fields.forEach(function (f) { wrap.appendChild(renderField(f, draft, false)); });
-
-    var submit = el("button", {
-      class: "submit",
-      attrs: { type: "button" },
-      text: submitting ? "Submitting…" : "Submit"
-    });
-    if (submitting) submit.disabled = true;
-    submit.addEventListener("click", function () { submitForm(form); });
-    wrap.appendChild(submit);
-
-    return wrap;
-  }
-
-  function renderField(field, draft, disabled) {
-    var wrap = el("div", { class: "field" });
-    var labelChildren = [field.label || field.id || ""];
-    if (field.required) labelChildren.push(el("span", { class: "req", text: "*" }));
-    wrap.appendChild(el("label", { class: "fl" }, labelChildren));
-
-    var type = field.type || "text";
-    if (type === "choice") {
-      wrap.appendChild(renderChoice(field, draft, disabled));
-    } else if (type === "list") {
-      wrap.appendChild(renderList(field, draft, disabled));
-    } else if (type === "multiline") {
-      var ta = el("textarea", {
-        class: "multiline-input",
-        attrs: { placeholder: field.placeholder || "" }
-      });
-      ta.value = draft[field.id] != null ? draft[field.id] : "";
-      if (disabled) ta.disabled = true;
-      ta.addEventListener("input", function () { draft[field.id] = ta.value; });
-      wrap.appendChild(ta);
-    } else {
-      // text (default)
-      var input = el("input", {
-        class: "text-input",
-        attrs: { type: "text", placeholder: field.placeholder || "" }
-      });
-      input.value = draft[field.id] != null ? draft[field.id] : "";
-      if (disabled) input.disabled = true;
-      input.addEventListener("input", function () { draft[field.id] = input.value; });
-      wrap.appendChild(input);
-    }
-    return wrap;
-  }
-
-  function renderChoice(field, draft, disabled) {
-    var box = el("div", { class: "choices" });
-    var options = Array.isArray(field.options) ? field.options : [];
-    options.forEach(function (opt) {
-      var selected = draft[field.id] === opt;
-      var c = el("div", { class: "choice" + (selected ? " sel" : "") });
-      c.appendChild(el("div", { class: "radio" }));
-      c.appendChild(el("span", { text: String(opt) }));
-      if (!disabled) {
-        c.addEventListener("click", function () {
-          draft[field.id] = opt;
-          // re-render just the choices group
-          var parent = box.parentNode;
-          var fresh = renderChoice(field, draft, disabled);
-          parent.replaceChild(fresh, box);
-        });
-      }
-      box.appendChild(c);
-    });
-    return box;
-  }
-
-  function renderList(field, draft, disabled) {
-    var box = el("div", {});
-    var rowsWrap = el("div", { class: "list-rows" });
-    var values = Array.isArray(draft[field.id]) ? draft[field.id] : (draft[field.id] = []);
-
-    function redraw() {
-      var fresh = renderList(field, draft, disabled);
-      box.parentNode.replaceChild(fresh, box);
-    }
-
-    if (values.length === 0) values.push("");
-
-    values.forEach(function (val, idx) {
-      var row = el("div", { class: "list-row" });
-      var input = el("input", {
-        class: "text-input",
-        attrs: { type: "text", placeholder: field.placeholder || "" }
-      });
-      input.value = val != null ? val : "";
-      if (disabled) input.disabled = true;
-      input.addEventListener("input", function () { values[idx] = input.value; });
-      row.appendChild(input);
-
-      if (!disabled) {
-        var rm = el("button", { class: "list-rm", attrs: { type: "button", "aria-label": "Remove" }, text: "×" });
-        rm.addEventListener("click", function () {
-          values.splice(idx, 1);
-          redraw();
-        });
-        row.appendChild(rm);
-      }
-      rowsWrap.appendChild(row);
-    });
-    box.appendChild(rowsWrap);
-
-    if (!disabled) {
-      var add = el("button", { class: "list-add", attrs: { type: "button" }, text: "+ Add" });
-      add.addEventListener("click", function () {
-        values.push("");
-        redraw();
-      });
-      box.appendChild(add);
-    }
-    return box;
-  }
-
-  function submitForm(form) {
-    if (submitting) return;
-    var draft = ensureDraft(form);
-
-    // Build clean values: trim text, drop empty list entries.
-    var values = {};
-    (form.fields || []).forEach(function (f) {
-      var v = draft[f.id];
-      if (f.type === "list") {
-        values[f.id] = (Array.isArray(v) ? v : [])
-          .map(function (s) { return (s == null ? "" : String(s)).trim(); })
-          .filter(function (s) { return s.length > 0; });
-      } else if (f.type === "choice") {
-        values[f.id] = (v != null) ? v : null;
-      } else {
-        values[f.id] = (v == null ? "" : String(v)).trim();
-      }
-    });
-
-    // Minimal required-field check (display data only; the driver re-validates).
-    var missing = (form.fields || []).filter(function (f) {
-      if (!f.required) return false;
-      var val = values[f.id];
-      if (f.type === "list") return !val.length;
-      if (f.type === "choice") return val == null;
-      return !val;
-    });
-    if (missing.length) {
-      // Flash a banner-ish note; keep it simple and non-blocking.
-      flashMissing(missing);
-      return;
-    }
-
-    submitting = true;
-    // re-render to disable the button
-    renderCurrent();
-
-    fetch(ANSWERS_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ values: values })
-    }).then(function (res) {
-      submitting = false;
-      if (!res.ok) {
-        flashError("Couldn't submit (" + res.status + "). Try again.");
-        renderCurrent();
-      }
-      // On success the server sets form.submitted=true and broadcasts new state
-      // over SSE, which will re-render us. Nothing else to do here.
-    }).catch(function () {
-      submitting = false;
-      flashError("Network error submitting. Try again.");
-      renderCurrent();
-    });
-  }
-
-  function flashMissing(fields) {
-    var labels = fields.map(function (f) { return f.label || f.id; }).join(", ");
-    flashError("Please fill in: " + labels);
-  }
-
-  var flashTimer = null;
-  function flashError(msg) {
-    var existing = document.querySelector(".form .banner.err-flash");
-    if (existing) existing.parentNode.removeChild(existing);
-    var formEl = document.querySelector(".form");
-    if (!formEl) return;
-    var b = el("div", { class: "banner err-flash", text: msg });
-    b.style.background = "#f7ecec";
-    b.style.borderColor = "#e3cccc";
-    b.style.color = "#b04a4a";
-    formEl.insertBefore(b, formEl.firstChild);
-    if (flashTimer) clearTimeout(flashTimer);
-    flashTimer = setTimeout(function () {
-      if (b.parentNode) b.parentNode.removeChild(b);
-    }, 4000);
   }
 
   // ---- verification ------------------------------------------------------

@@ -3,13 +3,12 @@
 # install dashboard server (ref/installer/server.ts) over its plain HTTP contract.
 #
 # It knows NOTHING about Domo, Claude, Plow, or connectors — only the generic
-# server-info file and the /state, /answers, /events endpoints described in
+# server-info file and the /state and /events endpoints described in
 # ref/installer/README.md. Source it, then call the functions below.
 #
 #   source ref/installer/client.sh
 #   installer_url                       # http://127.0.0.1:PORT
 #   installer_push "$(cat state.json)"  # POST full state object; echoes HTTP code
-#   installer_wait_answers 120          # block until the page submits the form
 #
 # Requires: jq, curl. No secrets are read, stored, or printed by this helper.
 set -euo pipefail
@@ -53,7 +52,6 @@ installer_token()       { _installer_field '.token'; }
 installer_event_url()   { _installer_field '.events_url'; }
 installer_events_url()  { _installer_field '.events_url'; }   # alias
 installer_state_url()   { _installer_field '.state_url'; }
-installer_answers_url() { _installer_field '.answers_url'; }
 
 # installer_info: dump the whole server-info JSON (handy for debugging).
 installer_info() {
@@ -94,45 +92,6 @@ installer_push() {
     return 1
   fi
   return 0
-}
-
-# --- answers ---------------------------------------------------------------
-
-# installer_answers: GET answers_url and print the JSON the page submitted:
-#   { "submitted": bool, "values": {…} }
-installer_answers() {
-  _installer_need curl
-  local url
-  url="$(installer_answers_url)" || return 1
-  curl -sS "$url"
-}
-
-# installer_wait_answers [timeout_seconds]: poll answers_url until
-# .submitted == true (default timeout 300s). On success, prints .values (JSON)
-# and returns 0. On timeout, returns 1.
-installer_wait_answers() {
-  _installer_need curl
-  _installer_need jq
-  local timeout="${1:-300}"
-  local url
-  url="$(installer_answers_url)" || return 1
-  local waited=0 body submitted
-  while :; do
-    body="$(curl -sS "$url" 2>/dev/null || true)"
-    if [ -n "$body" ]; then
-      submitted="$(printf '%s' "$body" | jq -r '.submitted // false' 2>/dev/null || echo false)"
-      if [ "$submitted" = "true" ]; then
-        printf '%s' "$body" | jq '.values'
-        return 0
-      fi
-    fi
-    if [ "$waited" -ge "$timeout" ]; then
-      echo "client.sh: timed out after ${timeout}s waiting for form submission" >&2
-      return 1
-    fi
-    sleep 1
-    waited=$((waited + 1))
-  done
 }
 
 # --- high-level verb layer (cumulative state; one-liners) ------------------
@@ -218,8 +177,7 @@ if [ "${BASH_SOURCE[0]:-}" = "${0:-}" ]; then
   else
     echo "client.sh: source me, or run: client.sh <function> [args]" >&2
     echo "functions: installer_url installer_port installer_token installer_event_url" >&2
-    echo "           installer_state_url installer_answers_url installer_info" >&2
-    echo "           installer_push installer_answers installer_wait_answers" >&2
+    echo "           installer_state_url installer_info installer_push" >&2
     exit 2
   fi
 fi
