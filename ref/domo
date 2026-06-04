@@ -57,6 +57,7 @@ SIG_FILE="$RUN_DIR/domo.sig"
 
 # Domo metadata (gitignored): holds the pinned session UUID.
 META_FILE="$CONFIG_DIR/domo.json"
+INSTALL_STATE_FILE="$DOMO_HOME/install-state.json"
 
 # Optional gitignored token/env, sourced if present (headless subscription auth).
 ENV_FILE="$DOMO_HOME/.env"
@@ -403,55 +404,53 @@ cmd_setup() {
 # ---------------------------------------------------------------------------
 # activate — Plow handshake (bash + curl only; plow-chat). Writes chmod-600 state.
 # ---------------------------------------------------------------------------
-cmd_activate() {
-  local force=0
-  [[ "${1:-}" == "--force" ]] && force=1
-  [[ "$DOMO_CHANNEL" == "plow-chat" ]] || die "activate is only for DOMO_CHANNEL=plow-chat (current: $DOMO_CHANNEL)."
-  require_curl
-  require_bun
+activation_mode() {
+  [[ -f "$INSTALL_STATE_FILE" ]] || { printf 'solo'; return 0; }
+  INSTALL_STATE_FILE="$INSTALL_STATE_FILE" bun -e '
+    const fs = require("fs");
+    try {
+      const o = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8"));
+      process.stdout.write(String(o?.interview?.mode || "solo"));
+    } catch {
+      process.stdout.write("solo");
+    }
+  '
+}
 
-  mkdir -p "$PLOW_DIR"; chmod 700 "$PLOW_DIR"
+json_value() {
+  local path="$1"
+  bun -e '
+    const fs = require("fs");
+    const path = process.argv.slice(1)[0].split(".");
+    let v = JSON.parse(fs.readFileSync(0, "utf8"));
+    for (const part of path) v = v == null ? undefined : v[part];
+    process.stdout.write(v == null ? "" : String(v));
+  ' "$path"
+}
 
-  # Idempotent-ish: if state.json already has a token, stop unless --force.
-  if [[ "$force" -eq 0 && -f "$PLOW_STATE_FILE" ]]; then
-    local existing; existing="$(json_get "$PLOW_STATE_FILE" "token")"
-    if [[ -n "$existing" ]]; then
-      log "already activated (state.json has a token). Use './domo activate --force' to redo."
-      return 0
-    fi
+plow_auth_activate() {
+  local provision_chat="$1" body
+  if [[ "$provision_chat" == "true" ]]; then
+    body='{"name":"Domo","provision_chat":true}'
+  else
+    body='{"name":"Domo"}'
   fi
-
-  # --- Step 1: POST /v1/auth/activate {name, provision_chat:true} ---
-  log "Requesting Plow activation at $PLOW_BASE_URL ..."
-  local resp1
-  resp1="$(curl -fsS -X POST "$PLOW_BASE_URL/v1/auth/activate" \
+  curl -fsS -X POST "$PLOW_BASE_URL/v1/auth/activate" \
     -H 'Content-Type: application/json' \
-    --data '{"name":"Domo","provision_chat":true}')" \
-    || die "activation request failed (POST /v1/auth/activate). Check connectivity."
+    --data "$body"
+}
 
-  # Parse with bun (no python). Pull the four fields we need.
-  local activation_secret display_code send_to line_id
-  activation_secret="$(printf '%s' "$resp1" | bun -e 'const s=require("fs").readFileSync(0,"utf8");process.stdout.write(String(JSON.parse(s).activation_secret??""))')"
-  display_code="$(printf '%s' "$resp1" | bun -e 'const s=require("fs").readFileSync(0,"utf8");process.stdout.write(String(JSON.parse(s).display_code??""))')"
-  send_to="$(printf '%s' "$resp1" | bun -e 'const s=require("fs").readFileSync(0,"utf8");process.stdout.write(String(JSON.parse(s).send_to??""))')"
-  # Read both spellings defensively (line_id per the contract example, line_uid as
-  # an alternate) so either Plow field name works (#4; runtime-unverified).
-  line_id="$(printf '%s' "$resp1" | bun -e 'const o=JSON.parse(require("fs").readFileSync(0,"utf8"));process.stdout.write(String(o.line_id??o.line_uid??""))')"
-
-  [[ -n "$activation_secret" ]] || die "activation response missing activation_secret."
-  [[ -n "$display_code" && -n "$send_to" ]] || die "activation response missing display_code/send_to."
-
-  # Persist the transient pre-token secret to a SEPARATE chmod-600 file so a
-  # half-finished activation never looks like usable state.
+write_activation_state_file() {
+  local response="$1"
   local tmp; tmp="$(umask 077; mktemp "$PLOW_DIR/.activation.json.XXXXXX")"
-  printf '%s' "$resp1" | bun -e '
-    const s = require("fs").readFileSync(0, "utf8");
+  printf '%s' "$response" | bun -e '
+    const fs = require("fs");
+    const s = fs.readFileSync(0, "utf8");
     const a = JSON.parse(s);
-    // `bun -e` argv has no script slot; user args start at index 1.
     const A = process.argv.slice(1);
     const out = A[0];
-    require("fs").writeFileSync(out, JSON.stringify({
-      base_url: A[1],
+    fs.writeFileSync(out, JSON.stringify({
+      base_url: A[1].replace(/\/$/, ""),
       activation_secret: a.activation_secret,
       display_code: a.display_code,
       send_to: a.send_to,
@@ -459,6 +458,98 @@ cmd_activate() {
     }, null, 2) + "\n");
   ' "$tmp" "$PLOW_BASE_URL"
   chmod 600 "$tmp"; mv -f "$tmp" "$PLOW_ACTIVATION_FILE"
+}
+
+push_activation_dashboard_row() {
+  local display_code="$1" send_to="$2" name="${3:-You}"
+  _dash installer_step plow active "Activate Plow chat — text the code"
+  _dash installer_verify "$name" pending "$display_code" "$send_to" self
+}
+
+mark_activation_dashboard_verified() {
+  local name="${1:-You}"
+  _dash installer_verify "$name" verified
+  _dash installer_step plow ok "Plow chat active"
+}
+
+poll_activation_redeem() {
+  local activation_secret="$1"
+  local deadline=$(( $(date +%s) + 300 ))
+  local status="pending" redeem
+  while :; do
+    redeem="$(printf '{"activation_secret":"%s"}' "$activation_secret" \
+      | curl -fsS -X POST "$PLOW_BASE_URL/v1/auth/activate/redeem" \
+        -H 'Content-Type: application/json' \
+        --data-binary @- 2>/dev/null || true)"
+    if [[ -n "$redeem" ]]; then
+      status="$(printf '%s' "$redeem" | bun -e 'try{const s=require("fs").readFileSync(0,"utf8");process.stdout.write(String(JSON.parse(s).status??"pending"))}catch{process.stdout.write("pending")}')"
+    fi
+    if [[ "$status" == "verified" ]]; then
+      printf '%s' "$redeem"
+      return 0
+    fi
+    if [[ "$(date +%s)" -ge "$deadline" ]]; then
+      die "activation not verified within ~5 min. Re-run './domo activate' once you've texted the code."
+    fi
+    sleep 3
+  done
+}
+
+write_plow_channel_state_file() {
+  local token="$1" chat_uid="$2"
+  local stmp; stmp="$(umask 077; mktemp "$PLOW_DIR/.state.json.XXXXXX")"
+  TOKEN="$token" CHAT_UID="$chat_uid" BASE_URL="$PLOW_BASE_URL" bun -e '
+    const fs = require("fs");
+    const out = process.argv.slice(1)[0];
+    fs.writeFileSync(out, JSON.stringify({
+      base_url: process.env.BASE_URL.replace(/\/$/, ""),
+      token: process.env.TOKEN,
+      chat_uid: process.env.CHAT_UID,
+    }, null, 2) + "\n");
+  ' "$stmp"
+  chmod 600 "$stmp"; mv -f "$stmp" "$PLOW_STATE_FILE"
+}
+
+set_install_activation_status() {
+  local status="$1"
+  mkdir -p "$DOMO_HOME"
+  local tmp; tmp="$(umask 077; mktemp "$DOMO_HOME/.install-state.json.XXXXXX")"
+  INSTALL_STATE_FILE="$INSTALL_STATE_FILE" STATUS="$status" bun -e '
+    const fs = require("fs");
+    const out = process.argv.slice(1)[0];
+    let prev = {};
+    try { prev = JSON.parse(fs.readFileSync(process.env.INSTALL_STATE_FILE, "utf8")); } catch {}
+    prev.activation = process.env.STATUS;
+    fs.writeFileSync(out, JSON.stringify(prev, null, 2) + "\n");
+  ' "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$INSTALL_STATE_FILE"
+}
+
+complete_activation() {
+  local chat_uid="$1"
+  rm -f "$PLOW_ACTIVATION_FILE"
+  set_install_activation_status complete
+  mark_activation_dashboard_verified "You"
+  log "Activation verified. State written to $PLOW_STATE_FILE (chmod 600). chat_uid=$chat_uid"
+  log "Token stored (NOT printed). If a session is already running: './domo stop && ./domo start' to pick it up."
+}
+
+activate_solo_path() {
+  log "Requesting Plow activation at $PLOW_BASE_URL ..."
+  local response activation_secret display_code send_to line_id
+  response="$(plow_auth_activate true)" \
+    || die "activation request failed (POST /v1/auth/activate). Check connectivity."
+
+  activation_secret="$(printf '%s' "$response" | json_value activation_secret)"
+  display_code="$(printf '%s' "$response" | json_value display_code)"
+  send_to="$(printf '%s' "$response" | json_value send_to)"
+  line_id="$(printf '%s' "$response" | bun -e 'const o=JSON.parse(require("fs").readFileSync(0,"utf8"));process.stdout.write(String(o.line_id??o.line_uid??""))')"
+
+  [[ -n "$activation_secret" ]] || die "activation response missing activation_secret."
+  [[ -n "$display_code" && -n "$send_to" ]] || die "activation response missing display_code/send_to."
+
+  write_activation_state_file "$response"
 
   cat >&2 <<EOF
 
@@ -467,7 +558,7 @@ cmd_activate() {
 [domo] ============================================================
 [domo] From the phone you want bound to this chat, text EXACTLY:
 [domo]
-[domo]     Plow Activate: $display_code
+[domo]     $display_code
 [domo]
 [domo]   to:  $send_to
 [domo]
@@ -475,61 +566,46 @@ cmd_activate() {
 [domo] ============================================================
 EOF
 
-  # Mirror the "text this code" instruction onto the install dashboard (if one is
-  # running) so the page shows what to DO — the code + number with a live spinner
-  # → ✓ — instead of a dead "activating…" status line.
-  _dash installer_step plow active "Activate Plow chat — text the code"
-  _dash installer_verify "You" pending "Plow Activate: $display_code" "$send_to" self
+  push_activation_dashboard_row "$display_code" "$send_to" "You"
 
-  # --- Step 2: poll POST /v1/auth/activate/redeem until verified (cap ~5min) ---
-  local deadline=$(( $(date +%s) + 300 ))
-  local status="pending" redeem token chat_uid
-  while :; do
-    # Pass the pre-token activation_secret via STDIN, never argv, so it is not
-    # visible to other local users via `ps` during the ~5-min poll (#3).
-    redeem="$(printf '{"activation_secret":"%s"}' "$activation_secret" \
-      | curl -fsS -X POST "$PLOW_BASE_URL/v1/auth/activate/redeem" \
-        -H 'Content-Type: application/json' \
-        --data-binary @- 2>/dev/null || true)"
-    if [[ -n "$redeem" ]]; then
-      status="$(printf '%s' "$redeem" | bun -e 'try{const s=require("fs").readFileSync(0,"utf8");process.stdout.write(String(JSON.parse(s).status??"pending"))}catch{process.stdout.write("pending")}')"
-    fi
-    if [[ "$status" == "verified" ]]; then break; fi
-    if [[ "$(date +%s)" -ge "$deadline" ]]; then
-      die "activation not verified within ~5 min. Re-run './domo activate' once you've texted the code."
-    fi
-    sleep 3
-  done
-
-  # Extract token + chat.uid from the verified redeem response.
-  token="$(printf '%s' "$redeem" | bun -e 'const s=require("fs").readFileSync(0,"utf8");process.stdout.write(String(JSON.parse(s).token??""))')"
-  chat_uid="$(printf '%s' "$redeem" | bun -e 'const s=require("fs").readFileSync(0,"utf8");const o=JSON.parse(s);process.stdout.write(String((o.chat&&o.chat.uid)||""))')"
+  local redeem token chat_uid
+  redeem="$(poll_activation_redeem "$activation_secret")"
+  token="$(printf '%s' "$redeem" | json_value token)"
+  chat_uid="$(printf '%s' "$redeem" | json_value chat.uid)"
   [[ -n "$token" ]] || die "verified redeem response had no token."
   [[ -n "$chat_uid" ]] || die "verified redeem response had no chat.uid."
 
-  # Write redeemed state atomically (umask 077; temp + mv). Build JSON via bun so the
-  # token is never interpolated into a shell-visible command line.
-  local stmp; stmp="$(umask 077; mktemp "$PLOW_DIR/.state.json.XXXXXX")"
-  TOKEN="$token" CHAT_UID="$chat_uid" BASE_URL="$PLOW_BASE_URL" bun -e '
-    // `bun -e` argv has no script slot; user args start at index 1.
-    const out = process.argv.slice(1)[0];
-    require("fs").writeFileSync(out, JSON.stringify({
-      base_url: process.env.BASE_URL.replace(/\/$/, ""),
-      token: process.env.TOKEN,
-      chat_uid: process.env.CHAT_UID,
-    }, null, 2) + "\n");
-  ' "$stmp"
-  chmod 600 "$stmp"; mv -f "$stmp" "$PLOW_STATE_FILE"
+  write_plow_channel_state_file "$token" "$chat_uid"
+  complete_activation "$chat_uid"
+}
 
-  # The activation_secret is spent; delete the transient file.
-  rm -f "$PLOW_ACTIVATION_FILE"
+activate_group_path() {
+  die "group activation is not implemented yet; Chunk 4 adds the shared-helper group path."
+}
 
-  # Flip the dashboard panel to ✓ (if a dashboard is running).
-  _dash installer_verify "You" verified
-  _dash installer_step plow ok "Plow chat active"
+cmd_activate() {
+  local force=0 mode
+  [[ "${1:-}" == "--force" ]] && force=1
+  [[ "$DOMO_CHANNEL" == "plow-chat" ]] || die "activate is only for DOMO_CHANNEL=plow-chat (current: $DOMO_CHANNEL)."
+  require_curl
+  require_bun
 
-  log "Activation verified. State written to $PLOW_STATE_FILE (chmod 600). chat_uid=$chat_uid"
-  log "Token stored (NOT printed). If a session is already running: './domo stop && ./domo start' to pick it up."
+  mkdir -p "$PLOW_DIR"; chmod 700 "$PLOW_DIR"
+
+  if [[ "$force" -eq 0 && -f "$PLOW_STATE_FILE" ]]; then
+    local existing; existing="$(json_get "$PLOW_STATE_FILE" "token")"
+    if [[ -n "$existing" ]]; then
+      log "already activated (state.json has a token). Use './domo activate --force' to redo."
+      return 0
+    fi
+  fi
+
+  mode="$(activation_mode)"
+  case "$mode" in
+    solo) activate_solo_path ;;
+    group) activate_group_path ;;
+    *) die "unknown install interview mode '$mode' in $INSTALL_STATE_FILE (expected solo or group)." ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
