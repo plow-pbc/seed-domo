@@ -41,8 +41,8 @@ DOMO_HOME="$HOME/.domo" PLOW_CHAT_BASE_URL="$base_url" ref/domo-activate-piece.s
 
 The stub exposes `/v1/auth/activate`, `/v1/auth/activate/redeem`,
 `/v1/lines`, `/v1/chats`, `/v1/ws/ticket`, and `/v1/ws?ticket=...`.
-Use `POST /_stub/text` with an exact activation or `VERIFY-*` code to simulate
-a phone text, and `GET /_stub/calls` to inspect counters and ordered call
+Use `POST /_stub/text` with an exact activation message or `VERIFY-*` code to
+simulate a phone text, and `GET /_stub/calls` to inspect counters and ordered call
 sequence.
 
 ## Dashboard Manual Smoke
@@ -65,10 +65,10 @@ sequence.
 4. Complete Claude login and Calendar connector setup, then confirm both rows
    flip to complete only after the corresponding piece reports success.
 
-5. Confirm the activation row appears with one code/number row for `You`.
+5. Confirm the activation row appears with one message/number row for `You`.
 
-6. Complete the activation by texting the displayed code. For local stub smoke,
-   post the exact code to `/_stub/text`.
+6. Complete the activation by texting the displayed message. For local stub
+   smoke, post the exact message to `/_stub/text`.
 
 7. Confirm the activation row flips to verified and the Plow step becomes
    complete only after the activation piece reports `VERIFIED`.

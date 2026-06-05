@@ -511,13 +511,13 @@ wait_for_file() {
 
 auto_text_stub_code() {
   local base_url="$1" activation_file="$2" seen_file="$3"
-  local code
+  local text
   while :; do
     if [[ -f "$activation_file" ]]; then
-      code="$(jq -r '.display_code // empty' "$activation_file" 2>/dev/null || true)"
-      if [[ -n "$code" ]] && ! grep -qxF "$code" "$seen_file" 2>/dev/null; then
-        printf '%s\n' "$code" >> "$seen_file"
-        jq -n --arg text "$code" '{text: $text}' \
+      text="$(jq -r '.activation_message // (if (.display_code // "") != "" then "Plow Activate: " + .display_code else "" end)' "$activation_file" 2>/dev/null || true)"
+      if [[ -n "$text" ]] && ! grep -qxF "$text" "$seen_file" 2>/dev/null; then
+        printf '%s\n' "$text" >> "$seen_file"
+        jq -n --arg text "$text" '{text: $text}' \
           | curl -fsS -X POST "$base_url/_stub/text" -H 'Content-Type: application/json' -d @- >/dev/null
         return 0
       fi

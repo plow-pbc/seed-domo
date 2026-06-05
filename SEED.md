@@ -45,7 +45,7 @@ missing dependency it cannot resolve.
   `DOMO_HOME=$HOME/.domo` threaded through every step.
 - **The user** - the human installing Domo. The user performs only the human
   auth and texting steps: complete Claude login when asked, connect Google
-  Calendar if needed, and text one Plow activation code.
+  Calendar if needed, and text one Plow activation message.
 - **`DOMO_HOME`** - the dedicated persistent Domo home for the install:
   `$HOME/.domo`. The agent MUST set and use exactly `DOMO_HOME=$HOME/.domo` for
   every piece command. The agent MUST NOT use the SEED checkout, any path inside
@@ -74,7 +74,7 @@ missing dependency it cannot resolve.
   NOT drive orchestration. The installing agent owns all dashboard state updates
   through `ref/installer/client.sh`. The dashboard state MUST NOT contain
   secrets; it MAY show public user-action data such as the login command,
-  Calendar connector URL, Plow activation code, and Plow target number.
+  Calendar connector URL, Plow activation message, and Plow target number.
 
 ## Actions
 
@@ -215,11 +215,11 @@ Who runs what:
   DOMO_HOME=$HOME/.domo ref/domo-activate-piece.sh activate
   ```
 
-- The activation piece prints an activation code and target number.
+- The activation piece prints the full activation message and target number.
 - The agent relays them to the user in chat in this form:
 
   ```text
-  Text CODE to NUMBER from the phone Domo should use.
+  Text "Plow Activate: CODE" to NUMBER from the phone Domo should use.
   ```
 
 - The user sends exactly that text message.
@@ -242,18 +242,18 @@ While requesting activation:
 ref/installer/client.sh installer_step activate active "Preparing text activation" || true
 ```
 
-After the agent parses the activation `CODE` and `NUMBER` from the activation
-piece output, it relays them to the user in chat and pushes the same public
-copy-paste data to the dashboard:
+After the activation piece receives `MESSAGE` and `NUMBER` from Plow, it prints
+them in terminal and best-effort pushes the same public copy-paste data to the
+dashboard. `MESSAGE` is the full exact text to send, not the bare display code:
 
 ```bash
-ref/installer/client.sh installer_step activate waiting "Text the activation code" || true
-ref/installer/client.sh installer_verify "You" pending "CODE" "NUMBER" self || true
+ref/installer/client.sh installer_step activate waiting "Text the activation message" || true
+ref/installer/client.sh installer_verify "You" pending "MESSAGE" "NUMBER" self || true
 ```
 
 The dashboard MUST NOT receive activation secrets or the Plow Bearer token. It
-MAY receive only the public one-time activation code and target number that the
-user must text.
+MAY receive only the public one-time activation message and target number that
+the user must text.
 
 When verified:
 
@@ -306,7 +306,8 @@ DOMO_HOME=$HOME/.domo ref/domo-activate-piece.sh activate
 It performs:
 
 1. `POST /v1/auth/activate` with `{"name":"Domo","provision_chat":true}`.
-2. User texts the displayed code to the displayed number.
+2. User texts the displayed full message (`Plow Activate: <display_code>`) to the
+   displayed number.
 3. Poll `POST /v1/auth/activate/redeem` until `status=verified`.
 4. Write chmod-600 `{base_url, token, chat_uid}` state.
 

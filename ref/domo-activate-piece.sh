@@ -84,6 +84,11 @@ strict_activation_response() {
   ' >/dev/null
 }
 
+activation_message_for_code() {
+  local display_code="$1"
+  printf 'Plow Activate: %s' "$display_code"
+}
+
 strict_redeem_response() {
   jq -e '
     type == "object"
@@ -164,10 +169,12 @@ write_activation_file() {
   tmp="$(umask 077; mktemp "$PLOW_DIR/.activation.json.XXXXXX")"
   TMP_FILES+=("$tmp")
   printf '%s' "$response" | jq --arg base_url "${PLOW_BASE_URL%/}" '
+    ("Plow Activate: " + .display_code) as $activation_message |
     {
       base_url: $base_url,
       activation_secret: .activation_secret,
       display_code: .display_code,
+      activation_message: $activation_message,
       send_to: .send_to,
       line_uid: (.line_id // .line_uid // null)
     }
@@ -230,6 +237,17 @@ cleanup_command_text() {
   printf 'DOMO_HOME=%s %s cleanup' "$(quote "$DOMO_HOME")" "$(quote "$SCRIPT_PATH")"
 }
 
+dashboard_activation_waiting() {
+  local activation_message="$1" send_to="$2"
+  INSTALLER_STATE_DIR="${INSTALLER_STATE_DIR:-}" "$SCRIPT_DIR/installer/client.sh" installer_step activate waiting "Text the activation message" >/dev/null 2>&1 || true
+  INSTALLER_STATE_DIR="${INSTALLER_STATE_DIR:-}" "$SCRIPT_DIR/installer/client.sh" installer_verify "You" pending "$activation_message" "$send_to" self >/dev/null 2>&1 || true
+}
+
+dashboard_activation_verified() {
+  INSTALLER_STATE_DIR="${INSTALLER_STATE_DIR:-}" "$SCRIPT_DIR/installer/client.sh" installer_verify "You" verified "" "" self >/dev/null 2>&1 || true
+  INSTALLER_STATE_DIR="${INSTALLER_STATE_DIR:-}" "$SCRIPT_DIR/installer/client.sh" installer_step activate ok "Text line activated" >/dev/null 2>&1 || true
+}
+
 cmd_activate() {
   local force=0
   if [[ "${1:-}" == "--force" ]]; then
@@ -249,7 +267,7 @@ cmd_activate() {
   log "CLAUDE_CONFIG_DIR=$CONFIG_DIR"
   log "Requesting solo Plow activation at ${PLOW_BASE_URL%/} ..."
 
-  local response activation_secret display_code send_to line_uid
+  local response activation_secret display_code activation_message send_to line_uid
   response="$(plow_http POST /v1/auth/activate '{"name":"Domo","provision_chat":true}')"
   if ! printf '%s' "$response" | strict_activation_response; then
     err "activation response failed strict validation"
@@ -258,9 +276,11 @@ cmd_activate() {
 
   activation_secret="$(printf '%s' "$response" | json_get '.activation_secret')"
   display_code="$(printf '%s' "$response" | json_get '.display_code')"
+  activation_message="$(activation_message_for_code "$display_code")"
   send_to="$(printf '%s' "$response" | json_get '.send_to')"
   line_uid="$(printf '%s' "$response" | json_get '.line_id // .line_uid')"
   write_activation_file "$response"
+  dashboard_activation_waiting "$activation_message" "$send_to"
 
   cat >&2 <<EOF
 
@@ -269,7 +289,7 @@ cmd_activate() {
 [domo-activate] ============================================================
 [domo-activate] From the phone you want bound to Domo, text EXACTLY:
 [domo-activate]
-[domo-activate]     $display_code
+[domo-activate]     $activation_message
 [domo-activate]
 [domo-activate]   to:  $send_to
 [domo-activate]
@@ -290,6 +310,7 @@ EOF
     return 1
   fi
   log "VERIFIED"
+  dashboard_activation_verified
   log "State written to $PLOW_STATE_FILE (chmod $(file_mode "$PLOW_STATE_FILE")). chat_uid=$chat_uid"
   log "Token stored (NOT printed)."
 }
@@ -371,13 +392,13 @@ wait_for_file() {
 
 auto_text_stub_code() {
   local base_url="$1" activation_file="$2" seen_file="$3"
-  local code
+  local text
   while :; do
     if [[ -f "$activation_file" ]]; then
-      code="$(jq -r '.display_code // empty' "$activation_file" 2>/dev/null || true)"
-      if [[ -n "$code" ]] && ! grep -qxF "$code" "$seen_file" 2>/dev/null; then
-        printf '%s\n' "$code" >> "$seen_file"
-        jq -n --arg text "$code" '{text: $text}' \
+      text="$(jq -r '.activation_message // empty' "$activation_file" 2>/dev/null || true)"
+      if [[ -n "$text" ]] && ! grep -qxF "$text" "$seen_file" 2>/dev/null; then
+        printf '%s\n' "$text" >> "$seen_file"
+        jq -n --arg text "$text" '{text: $text}' \
           | curl -fsS -X POST "$base_url/_stub/text" -H 'Content-Type: application/json' -d @- >/dev/null
         return 0
       fi
@@ -396,6 +417,7 @@ cmd_selftest() {
   }
 
   local root stub_dir home server_info base_url state_file calls_file out_file err_file text_pid activate_rc
+  local activation_message display_code bare_code_rc
   root="$(mktemp -d "${TMPDIR:-/tmp}/domo-activate-selftest.XXXXXX")"
   stub_dir="$root/stub"
   home="$root/home"
@@ -435,6 +457,26 @@ cmd_selftest() {
     return "$activate_rc"
   fi
 
+  activation_message="$(sed -n '1p' "$root/seen-codes" 2>/dev/null || true)"
+  [[ "$activation_message" == Plow\ Activate:\ * ]] || {
+    err "selftest did not send full activation message; got '${activation_message:-<empty>}'"
+    return 1
+  }
+  grep -F "$activation_message" "$err_file" >/dev/null || {
+    err "activation stderr did not display the full activation message"
+    return 1
+  }
+  display_code="${activation_message#Plow Activate: }"
+  set +e
+  jq -n --arg text "$display_code" '{text: $text}' \
+    | curl -fsS -X POST "$base_url/_stub/text" -H 'Content-Type: application/json' -d @- >/dev/null 2>&1
+  bare_code_rc=$?
+  set -e
+  [[ "$bare_code_rc" -ne 0 ]] || {
+    err "stub accepted bare activation code; expected full activation message only"
+    return 1
+  }
+
   strict_state_file "$state_file" || {
     err "selftest state file failed strict validation"
     return 1
@@ -459,6 +501,7 @@ cmd_selftest() {
   }
 
   log "PASS selftest activated against stub"
+  log "PASS full activation message required: $activation_message"
   log "PASS state file shape and chmod-600: $state_file"
   log "PASS call sequence: $(jq -r '[.sequence[].path] | join(" -> ")' "$calls_file")"
   log "Selftest artifacts: $root"
@@ -469,7 +512,7 @@ usage() {
 Usage: DOMO_HOME=/isolated/domo-home $SCRIPT_PATH <command>
 
 Commands:
-  activate [--force]  Request solo Plow activation, print code/number, poll redeem, write state
+  activate [--force]  Request solo Plow activation, print message/number, poll redeem, write state
   harness             One-command real activation harness for the head chef
   status              Validate and print non-secret Plow activation state
   cleanup             Soft-delete the stored Plow chat and remove local state

@@ -73,7 +73,7 @@ Covered Plow endpoints:
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/v1/auth/activate` | Create owner/solo activation and return `display_code`, `send_to`, `activation_secret`. |
-| `POST` | `/v1/auth/activate/redeem` | Return `pending` until the exact activation code is posted to `/_stub/text`, then return token/chat. |
+| `POST` | `/v1/auth/activate/redeem` | Return `pending` until the exact activation message is posted to `/_stub/text`, then return token/chat. |
 | `GET` | `/v1/lines` | Return the stub agent line for group chat creation. |
 | `POST` | `/v1/chats` | Create a group chat with pending member participants and one-time `VERIFY-*` codes. |
 | `POST` | `/v1/chats/:chat/invitations/:participant/resend` | Re-issue a pending member verification code. |
@@ -184,9 +184,10 @@ Enums: `status` ∈ `pending|waiting|active|ok|error`; `where` ∈
 - A `waiting` step with `action` expands into a card: a mono "↳ where" label, the
   `instruction`, and — for `where:"terminal"` — a **dark command box** containing
   `command` with a **Copy** button; for `where:"browser"`, a labeled link button.
-- `verification` renders one row per member: avatar, name, (for non-self) the `code`
-  in a chip with **Copy** + the `number` to text, and a live status (spinner →
-  ✓ Verified), over a "N of M verified" progress bar.
+- `verification` renders one row per member: avatar, name, the `code` field (for
+  solo activation, the full activation message) in a chip with **Copy** + the
+  `number` to text, and a live status (spinner → ✓ Verified), over a "N of M
+  verified" progress bar.
 - Style: **Plow Seeds** — chalk/oat bg, white cards, sage-green `#5e7a5e` accent,
   DM Sans + DM Mono, dark command boxes. Match `seeds.plow.co`.
 
@@ -197,7 +198,7 @@ Enums: `status` ∈ `pending|waiting|active|ok|error`; `where` ∈
   whose JSON contains any string matching a secret pattern (`Bearer `, `plow_…`,
   `sk-…`, `ghp_…`, keys named `*token*`/`*secret*`/`*password*`/`*key*` with a
   secret-looking value). Verification `code`s (`VERIFY-…`, one-time, meant to be
-  shown) are allowed.
+  shown) and activation messages (`Plow Activate: …`) are allowed.
 - Bind `127.0.0.1` only; ephemeral port; random path token; in-memory state only;
   no persistence of state to disk beyond `server-info`.
 - The process is ephemeral — a driver kills it when the install reaches `done`.

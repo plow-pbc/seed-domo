@@ -90,7 +90,7 @@ const line = {
 
 const activations = new Map<string, Activation>();
 const tokens = new Map<string, Activation>();
-const activationCodes = new Map<string, string>();
+const activationMessages = new Map<string, string>();
 const chats = new Map<string, Chat>();
 const messages = new Map<string, StubMessage[]>();
 const verificationCodes = new Map<string, { chatUid: string; participantUid: string }>();
@@ -189,6 +189,10 @@ function activationResponse(activation: Activation): Record<string, unknown> {
   };
 }
 
+function activationMessage(activation: Activation): string {
+  return `Plow Activate: ${activation.displayCode}`;
+}
+
 function ensureSoloChat(activation: Activation): void {
   if (!activation.provisionChat || chats.has(activation.chatUid)) return;
   const chat: Chat = {
@@ -239,7 +243,7 @@ function createActivation(body: Record<string, unknown>): Response {
     chatUid: id("cht"),
   };
   activations.set(activation.activationSecret, activation);
-  activationCodes.set(activation.displayCode, activation.activationSecret);
+  activationMessages.set(activationMessage(activation), activation.activationSecret);
   return json(activationResponse(activation));
 }
 
@@ -427,13 +431,13 @@ async function sendMessage(req: Request, chatUid: string): Promise<Response> {
 
 function receiveText(body: Record<string, unknown>): Response {
   const text = String(body.text || "").trim();
-  if (activationCodes.has(text)) {
-    const activation = activations.get(activationCodes.get(text) || "");
+  if (activationMessages.has(text)) {
+    const activation = activations.get(activationMessages.get(text) || "");
     if (!activation) return error(404, "unknown activation");
     activation.verified = true;
-    return json({ status: "verified", display_code: text, activation_secret: activation.activationSecret });
+    return json({ status: "verified", display_code: activation.displayCode, activation_message: text, activation_secret: activation.activationSecret });
   }
-  if (!verificationCodes.has(text)) return error(404, "unknown exact code");
+  if (!verificationCodes.has(text)) return error(404, "unknown exact activation message or verification code");
   const { chatUid, participantUid } = verificationCodes.get(text)!;
   const chat = chats.get(chatUid);
   if (!chat) return error(404, "unknown chat");

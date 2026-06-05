@@ -60,7 +60,7 @@ order:
    and sends the first ready text.
 
 The only things you do are the interactive subscription login, the browser
-connector toggle, and texting verification codes from the relevant phone(s).
+connector toggle, and texting the activation message from the relevant phone.
 Tokens and one-time codes stay in chmod-600 gitignored state files and are never
 printed as secrets.
 
