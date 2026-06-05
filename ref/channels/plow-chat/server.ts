@@ -34,7 +34,7 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs'
 import { dirname, join } from 'path'
 
 // ---------------------------------------------------------------------------
@@ -58,6 +58,14 @@ const STATE_PATH = process.env.PLOW_CHAT_STATE ?? ''
 const LAST_SEEN_PATH = STATE_PATH
   ? join(dirname(STATE_PATH), 'last_seen.json')
   : ''
+
+// Non-secret readiness marker used by ref/domo-ready-piece.sh. Claude Code does
+// not reliably forward this MCP child server's stderr to the daemon log, so the
+// parent readiness probe must observe a file written by this process after a
+// confirmed Plow WSS frame.
+const CONNECTED_MARKER_PATH = process.env.PLOW_CHAT_CONNECTED_MARKER !== undefined
+  ? process.env.PLOW_CHAT_CONNECTED_MARKER
+  : (STATE_PATH ? join(dirname(STATE_PATH), 'connected') : '')
 
 /** Read + validate the state file. Returns null (never throws) if not ready. */
 function readState(): PlowState | null {
@@ -236,6 +244,39 @@ function logErr(line: string): void {
   process.stderr.write(`plow-chat: ${line}\n`)
 }
 
+function writeConnectedMarker(state: PlowState, event: string): void {
+  if (!CONNECTED_MARKER_PATH) return
+  try {
+    mkdirSync(dirname(CONNECTED_MARKER_PATH), { recursive: true })
+    writeFileSync(
+      CONNECTED_MARKER_PATH,
+      JSON.stringify({
+        connected: true,
+        event,
+        pid: process.pid,
+        chat_uid: state.chat_uid,
+        at: new Date().toISOString(),
+      }) + '\n',
+      { mode: 0o600 },
+    )
+  } catch {
+    // Best-effort marker; the channel itself should stay alive if the marker
+    // cannot be written.
+  }
+}
+
+function clearConnectedMarker(): void {
+  if (!CONNECTED_MARKER_PATH) return
+  try {
+    const raw = readFileSync(CONNECTED_MARKER_PATH, 'utf-8')
+    const marker = JSON.parse(raw)
+    if (Number(marker?.pid) !== process.pid) return
+    rmSync(CONNECTED_MARKER_PATH, { force: true })
+  } catch {
+    // Best-effort marker cleanup.
+  }
+}
+
 /** POST /v1/ws/ticket {chat_id} -> ticket string. Throws on failure. */
 async function mintTicket(state: PlowState): Promise<string> {
   const res = await fetch(`${state.base_url}/v1/ws/ticket`, {
@@ -408,10 +449,12 @@ function connectOnce(state: PlowState): Promise<void> {
           // Subscription is live.
           chatActive = true
           logErr('connected')
+          writeConnectedMarker(state, 'connected')
           break
         case 'chat_active':
           chatActive = true
           logErr('chat_active')
+          writeConnectedMarker(state, 'chat_active')
           break
         case 'chat_activation_failed':
           // Terminal: recovery is delete + recreate the chat (operator action).
@@ -435,10 +478,12 @@ function connectOnce(state: PlowState): Promise<void> {
     ws.addEventListener('error', () => {
       // Resolve so the supervisor reconnects even if no 'close' follows (e.g. a
       // construct/handshake error). Don't log the token. (finding #7)
+      clearConnectedMarker()
       done()
     })
 
     ws.addEventListener('close', () => {
+      clearConnectedMarker()
       done()
     })
   })

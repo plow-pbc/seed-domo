@@ -22,11 +22,13 @@ WORKSPACE="$DOMO_HOME/workspace"
 RUN_DIR="$CONFIG_DIR/run"
 PLOW_DIR="$CONFIG_DIR/plow-chat"
 PLOW_STATE_FILE="$PLOW_DIR/state.json"
+PLOW_CONNECTED_MARKER="$PLOW_DIR/connected"
 META_FILE="$CONFIG_DIR/domo.json"
 READY_CONFIG_FILE="$CONFIG_DIR/domo-ready.json"
 LOG_FILE="$RUN_DIR/domo-ready.log"
 PID_FILE="$RUN_DIR/domo-ready.pid"
 SIG_FILE="$RUN_DIR/domo-ready.sig"
+TMUX_SESSION_FILE="$RUN_DIR/domo-ready.tmux"
 PLOW_CHANNEL_DIR="$SCRIPT_DIR/channels/plow-chat"
 SPAWN_CONFIRM="$SCRIPT_DIR/bin/spawn-confirm.expect"
 ACTIVATE_PIECE="$SCRIPT_DIR/domo-activate-piece.sh"
@@ -73,11 +75,13 @@ set_domo_home() {
   RUN_DIR="$CONFIG_DIR/run"
   PLOW_DIR="$CONFIG_DIR/plow-chat"
   PLOW_STATE_FILE="$PLOW_DIR/state.json"
+  PLOW_CONNECTED_MARKER="$PLOW_DIR/connected"
   META_FILE="$CONFIG_DIR/domo.json"
   READY_CONFIG_FILE="$CONFIG_DIR/domo-ready.json"
   LOG_FILE="$RUN_DIR/domo-ready.log"
   PID_FILE="$RUN_DIR/domo-ready.pid"
   SIG_FILE="$RUN_DIR/domo-ready.sig"
+  TMUX_SESSION_FILE="$RUN_DIR/domo-ready.tmux"
 }
 
 file_mode() {
@@ -275,6 +279,36 @@ write_daemon_sig() {
   mv -f "$tmp" "$SIG_FILE"
 }
 
+tmux_session_name() {
+  local sid compact
+  sid="$(read_session_id)"
+  compact="$(printf '%s' "${sid:-plow-chat}" | tr -cd '[:alnum:]')"
+  printf 'domo-ready-%s' "${compact:-plowchat}"
+}
+
+write_tmux_launch_script() {
+  local script="$RUN_DIR/domo-ready-launch.sh" arg
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -euo pipefail\n'
+    printf 'cd %q\n' "$WORKSPACE"
+    printf 'export PLOW_CHAT_STATE=%q\n' "$PLOW_STATE_FILE"
+    printf 'export PLOW_CHAT_CONNECTED_MARKER=%q\n' "$PLOW_CONNECTED_MARKER"
+    printf 'export CLAUDE_CONFIG_DIR=%q\n' "$CONFIG_DIR"
+    if command -v expect >/dev/null 2>&1 && [[ -f "$SPAWN_CONFIRM" ]]; then
+      printf 'exec expect -f %q' "$SPAWN_CONFIRM"
+      for arg in "${argv[@]}"; do printf ' %q' "$arg"; done
+      printf ' >>%q 2>&1\n' "$LOG_FILE"
+    else
+      printf 'exec'
+      for arg in "${argv[@]}"; do printf ' %q' "$arg"; done
+      printf ' >>%q 2>&1\n' "$LOG_FILE"
+    fi
+  } > "$script"
+  chmod 700 "$script"
+  printf '%s' "$script"
+}
+
 wait_for_log() {
   local pattern="$1" timeout="$2" label="$3"
   local deadline=$(( $(date +%s) + timeout ))
@@ -285,6 +319,36 @@ wait_for_log() {
     sleep 1
   done
   warn "timed out waiting for $label in $LOG_FILE"
+  return 1
+}
+
+clear_plow_connected_marker() {
+  rm -f "$PLOW_CONNECTED_MARKER"
+}
+
+wait_for_plow_connected_marker() {
+  local timeout="$1" marker_pid marker_chat expected_chat
+  local deadline=$(( $(date +%s) + timeout ))
+  expected_chat="$(jq -r '.chat_uid' "$PLOW_STATE_FILE" 2>/dev/null || true)"
+  while [[ "$(date +%s)" -lt "$deadline" ]]; do
+    if [[ -f "$PLOW_CONNECTED_MARKER" ]]; then
+      if jq -e --arg chat "$expected_chat" '
+        type == "object"
+        and .connected == true
+        and (.chat_uid // "") == $chat
+        and (.pid | type == "number")
+      ' "$PLOW_CONNECTED_MARKER" >/dev/null 2>&1; then
+        marker_pid="$(jq -r '.pid' "$PLOW_CONNECTED_MARKER")"
+        marker_chat="$(jq -r '.chat_uid' "$PLOW_CONNECTED_MARKER")"
+        if [[ -n "$marker_pid" ]] && kill -0 "$marker_pid" 2>/dev/null; then
+          log "plow-chat connected marker present (pid $marker_pid, chat_uid $marker_chat)."
+          return 0
+        fi
+      fi
+    fi
+    sleep 0.2
+  done
+  warn "timed out waiting for plow-chat connected marker: $PLOW_CONNECTED_MARKER"
   return 1
 }
 
@@ -318,7 +382,18 @@ cmd_stop() {
     pkill -f "$PLOW_CHANNEL_DIR" 2>/dev/null || true
   fi
 
-  rm -f "$PID_FILE" "$SIG_FILE"
+  local tmux_session=""
+  if [[ -f "$TMUX_SESSION_FILE" ]]; then
+    tmux_session="$(tr -d '\n' < "$TMUX_SESSION_FILE" 2>/dev/null || true)"
+  fi
+  [[ -n "$tmux_session" ]] || tmux_session="$(tmux_session_name)"
+  if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$tmux_session" 2>/dev/null; then
+    log "Stopping tmux daemon session: $tmux_session"
+    tmux kill-session -t "$tmux_session" 2>/dev/null || true
+  fi
+
+  rm -f "$PID_FILE" "$SIG_FILE" "$TMUX_SESSION_FILE"
+  clear_plow_connected_marker
   log "Daemon stopped."
 }
 
@@ -333,6 +408,7 @@ cmd_start() {
     return 2
   }
   write_default_config
+  cmd_stop
   ensure_workspace_trusted
   register_channel
 
@@ -352,6 +428,7 @@ cmd_start() {
   prompt="$(default_system_prompt)"
 
   export PLOW_CHAT_STATE="$PLOW_STATE_FILE"
+  export PLOW_CHAT_CONNECTED_MARKER="$PLOW_CONNECTED_MARKER"
   export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
 
   local argv=(
@@ -371,7 +448,19 @@ cmd_start() {
     printf 'channel=plow-chat permission=%s session=%s workspace=%s\n' "$PERMISSION_MODE" "$sid" "$WORKSPACE"
   } >>"$LOG_FILE" 2>&1
 
-  (
+  local launched_pid
+  if command -v tmux >/dev/null 2>&1; then
+    local tmux_session launch_script
+    tmux_session="$(tmux_session_name)"
+    launch_script="$(write_tmux_launch_script)"
+    tmux has-session -t "$tmux_session" 2>/dev/null && tmux kill-session -t "$tmux_session" 2>/dev/null || true
+    tmux new-session -d -s "$tmux_session" -c "$WORKSPACE" "exec bash $(quote "$launch_script")"
+    printf '%s\n' "$tmux_session" > "$TMUX_SESSION_FILE"
+    launched_pid="$(tmux display-message -p -t "$tmux_session" '#{pane_pid}' 2>/dev/null || true)"
+    [[ -n "$launched_pid" ]] || launched_pid="$(pgrep -f "$tmux_session" | head -1 || true)"
+  else
+    local oldpwd
+    oldpwd="$(pwd)"
     cd "$WORKSPACE"
     if command -v expect >/dev/null 2>&1 && [[ -f "$SPAWN_CONFIRM" ]]; then
       nohup expect -f "$SPAWN_CONFIRM" "${argv[@]}" </dev/null >>"$LOG_FILE" 2>&1 &
@@ -379,8 +468,11 @@ cmd_start() {
       warn "expect not found; daemon may hang at development-channel confirmation."
       nohup "${argv[@]}" </dev/null >>"$LOG_FILE" 2>&1 &
     fi
-    printf '%s\n' "$!" > "$PID_FILE"
-  )
+    launched_pid="$!"
+    disown %% 2>/dev/null || true
+    cd "$oldpwd"
+  fi
+  printf '%s\n' "$launched_pid" > "$PID_FILE"
 
   write_daemon_sig
   local pid
@@ -394,8 +486,8 @@ cmd_start() {
   fi
 
   log "Daemon process up (pid $pid)."
-  wait_for_log 'plow-chat: connected|plow-chat: state present; connecting' "$READY_TIMEOUT_SECONDS" "plow-chat connection" || return 1
-  log "Channel connected according to daemon log."
+  wait_for_plow_connected_marker "$READY_TIMEOUT_SECONDS" || return 1
+  log "Channel connected according to plow-chat marker."
 }
 
 send_ready_via_channel_tool() {
@@ -453,6 +545,7 @@ send_ready_via_channel_tool() {
         PATH: process.env.PATH,
         HOME: process.env.HOME,
         PLOW_CHAT_STATE: process.env.PLOW_CHAT_STATE,
+        PLOW_CHAT_CONNECTED_MARKER: "",
       },
       stderr: "pipe",
     });
