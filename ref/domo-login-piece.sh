@@ -38,11 +38,14 @@ auth_env() {
 
 drain_terminal_input() {
   [[ -t 0 ]] || return 0
-  local junk i=0
-  while IFS= read -r -s -t 0.1 -n 1024 junk; do
+  local old_tty junk i=0
+  old_tty="$(stty -g 2>/dev/null || true)"
+  stty -icanon min 0 time 1 2>/dev/null || true
+  while IFS= read -r -s -n 10000 junk; do
     i=$((i + 1))
-    [[ "$i" -lt 20 ]] || break
+    [[ -n "$junk" && "$i" -lt 5 ]] || break
   done
+  [[ -n "$old_tty" ]] && stty "$old_tty" 2>/dev/null || true
 }
 
 login_command_text() {
