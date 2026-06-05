@@ -32,7 +32,7 @@ set tries 0
 while {$tries < 4} {
   incr tries
   expect {
-    -re "text style|Choose the text|Let.s get started|trust the files" { send "\r" }
+    -re "text style|Choose the text|Let.s get started|trust the files|trust this folder|project.*trust|Yes, I trust" { send "\r" }
     "cancel"  { send "\r"; break }
     eof       { exit 0 }
     timeout   { send "\r"; break }

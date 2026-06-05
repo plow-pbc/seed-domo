@@ -36,6 +36,15 @@ auth_env() {
   env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR="$CONFIG_DIR" "$@"
 }
 
+drain_terminal_input() {
+  [[ -t 0 ]] || return 0
+  local junk i=0
+  while IFS= read -r -s -t 0.1 -n 1024 junk; do
+    i=$((i + 1))
+    [[ "$i" -lt 20 ]] || break
+  done
+}
+
 login_command_text() {
   printf 'DOMO_HOME=%s %s login' "$(quote "$DOMO_HOME")" "$(quote "$SCRIPT_PATH")"
 }
@@ -115,16 +124,17 @@ cmd_login() {
 
   log "DOMO_HOME=$DOMO_HOME"
   log "CLAUDE_CONFIG_DIR=$CONFIG_DIR"
-  log "Running isolated Claude subscription login."
-  log "Command: env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR=$(quote "$CONFIG_DIR") claude auth login --claudeai"
+  log "Running full Claude first-run onboarding and subscription login."
+  log "Command: env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR=$(quote "$CONFIG_DIR") claude /quit"
 
   set +e
-  auth_env claude auth login --claudeai
+  auth_env claude "/quit"
   local rc=$?
   set -e
 
-  # Defensive cleanup for the caller's real terminal. The auth subcommand does not
-  # run the chat TUI, but restoring sane tty flags is harmless after interrupted login.
+  # Claude's TUI may issue terminal queries just before exit. In some terminals the
+  # delayed response bytes can reach the parent shell; drain them before restoring tty.
+  drain_terminal_input
   if [[ -t 0 ]] && command -v stty >/dev/null 2>&1; then
     stty sane 2>/dev/null || true
   fi
@@ -207,7 +217,7 @@ usage() {
 Usage: DOMO_HOME=/isolated/domo-home $SCRIPT_PATH <command>
 
 Commands:
-  login     Run isolated Claude subscription login via 'claude auth login --claudeai'
+  login     Run full Claude first-run onboarding/login via 'claude /quit'
   status    Poll once and print the isolated auth state
   wait      Block-poll auth status until CONFIRMED or timeout
   harness   Print login/reset commands and live-poll until login is confirmed

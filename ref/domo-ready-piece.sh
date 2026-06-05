@@ -93,6 +93,33 @@ projects_dir() {
   printf '%s/projects/%s' "$CONFIG_DIR" "$(workspace_slug)"
 }
 
+ensure_workspace_trusted() {
+  require_tool jq
+  mkdir -p "$CONFIG_DIR"
+
+  local config_file="$CONFIG_DIR/.claude.json" tmp
+  tmp="$(umask 077; mktemp "$CONFIG_DIR/.claude.json.XXXXXX")"
+  if [[ -f "$config_file" ]]; then
+    jq --arg workspace "$WORKSPACE" '
+      .projects = (.projects // {})
+      | .projects[$workspace] = ((.projects[$workspace] // {}) + {hasTrustDialogAccepted: true})
+    ' "$config_file" > "$tmp"
+  else
+    jq -n --arg workspace "$WORKSPACE" '
+      {
+        projects: {
+          ($workspace): {
+            hasTrustDialogAccepted: true
+          }
+        }
+      }
+    ' > "$tmp"
+  fi
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$config_file"
+  log "Trusted workspace for daemon launch: $WORKSPACE"
+}
+
 auth_env() {
   env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR="$CONFIG_DIR" "$@"
 }
@@ -306,6 +333,7 @@ cmd_start() {
     return 2
   }
   write_default_config
+  ensure_workspace_trusted
   register_channel
 
   local oldpid=""
