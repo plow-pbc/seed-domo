@@ -9,10 +9,11 @@ sender. Nothing binds a port.
 
 ## How it loads
 
-Loaded as a local plugin dir by the `domo` CLI (not a marketplace install):
+Loaded as a local development channel by the `domo` CLI after registering the
+`plow-chat` MCP server:
 
 ```sh
-claude --channels plugin:plow-chat --plugin-dir /Users/plucas/cncorp/seed-domo/channels/plow-chat
+claude --dangerously-load-development-channels server:plow-chat
 ```
 
 `.mcp.json` launches the server with `bun`. The `start` script runs

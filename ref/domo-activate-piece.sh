@@ -137,6 +137,8 @@ plow_http() {
     code="$(curl "${args[@]}" 2>"$err_file")"
     rc=$?
   else
+    # Body via stdin keeps activation payloads out of argv; bearer tokens use
+    # curl --config above for the same ps-safe reason.
     code="$(printf '%s' "$body" | curl "${args[@]}" --data-binary @- 2>"$err_file")"
     rc=$?
   fi

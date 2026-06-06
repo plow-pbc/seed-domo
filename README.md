@@ -24,11 +24,11 @@ runs.
 
 ## Install
 
-The standard entry point is the SEED bootstrap:
+The standard entry point is `/seed-install`, which audits the cloned tree before
+running the install action:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/plow-pbc/seed/main/install.sh \
-  | bash -s -- https://github.com/plow-pbc/seed-domo
+/seed-install https://github.com/plow-pbc/seed-domo
 ```
 
 Already have the SEED skills? Point an agent at this repo:
@@ -37,8 +37,8 @@ Already have the SEED skills? Point an agent at this repo:
 git clone https://github.com/plow-pbc/seed-domo && cd seed-domo
 ```
 
-Then run `/seed-install https://github.com/plow-pbc/seed-domo`, or open the
-checkout and ask the agent to install this SEED.
+Then run `/seed-install .`, or open the checkout and ask the agent to install
+this SEED.
 
 The SEED install action is the install path. It pins the persistent Domo home
 outside the checkout:

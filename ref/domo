@@ -439,6 +439,8 @@ plow_http_json() {
     args+=(--config "$config")
   fi
   if [[ "$method" != "GET" ]]; then
+    # Body via stdin keeps activation payloads out of argv; bearer tokens use
+    # curl --config above for the same ps-safe reason.
     args+=(--data-binary @-)
     set +e
     code="$(printf '%s' "$body" | curl "${args[@]}" 2>"$err")"
