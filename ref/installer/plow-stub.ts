@@ -16,7 +16,7 @@
 //   GET  /v1/ws?ticket=...
 //
 // WSS behavior:
-//   - each accepted /v1/ws connection immediately sends {"type":"connected"}
+//   - each accepted /v1/ws connection sends {"type":"connected"} by default
 //   - POST /_stub/text with a member VERIFY code emits participant_verified
 //   - after the final member verifies, the socket emits chat_active
 //
@@ -24,7 +24,7 @@
 //   POST /_stub/text       {"text":"<exact activation or VERIFY code>","from":"+1555..."}
 //   POST /_stub/inbound    {"chat_uid":"cht_...","body":"...","from":"+1555...","display_name":"Pat"}
 //   GET  /_stub/messages?chat_uid=cht_...
-//   POST /_stub/config     {"ws_close_on_open":true|false,"response_delay_ms":0}
+//   POST /_stub/config     {"ws_close_on_open":true|false,"ws_send_connected":true|false,"response_delay_ms":0}
 //   GET  /_stub/calls      counters plus ordered Plow API sequence
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -124,6 +124,7 @@ const calls: {
   sequence: [],
 };
 let wsCloseOnOpen = process.env.PLOW_STUB_WS_CLOSE_ON_OPEN === "1";
+let wsSendConnected = process.env.PLOW_STUB_WS_SEND_CONNECTED !== "0";
 let redeemErrorStatus = 0;
 let responseDelayMs = 0;
 
@@ -506,9 +507,10 @@ const server = Bun.serve({
       const body = await parseJson(req);
       if (body instanceof Response) return body;
       wsCloseOnOpen = body.ws_close_on_open === true;
+      wsSendConnected = body.ws_send_connected !== false;
       redeemErrorStatus = typeof body.redeem_error_status === "number" ? body.redeem_error_status : 0;
       responseDelayMs = typeof body.response_delay_ms === "number" ? body.response_delay_ms : 0;
-      return json({ ws_close_on_open: wsCloseOnOpen, redeem_error_status: redeemErrorStatus, response_delay_ms: responseDelayMs });
+      return json({ ws_close_on_open: wsCloseOnOpen, ws_send_connected: wsSendConnected, redeem_error_status: redeemErrorStatus, response_delay_ms: responseDelayMs });
     }
     if (pathname === "/_stub/text" && req.method === "POST") {
       const body = await parseJson(req);
@@ -568,7 +570,7 @@ const server = Bun.serve({
   websocket: {
     open(ws) {
       sockets.add(ws);
-      ws.send(JSON.stringify({ type: "connected" }));
+      if (wsSendConnected) ws.send(JSON.stringify({ type: "connected" }));
       if (wsCloseOnOpen) {
         setTimeout(() => ws.close(1011, "simulated drop"), 25);
       }

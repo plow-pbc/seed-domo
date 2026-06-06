@@ -499,7 +499,35 @@ dashboard_group_member_verified() {
 
 activation_detail_is_group_ready() {
   [[ -f "$INSTALL_STATE_FILE" ]] || return 1
-  jq -e '.activation_detail.mode == "group" and (.activation_detail.token | type == "string") and (.activation_detail.chat.uid | startswith("cht_"))' "$INSTALL_STATE_FILE" >/dev/null
+  jq -e '
+    .activation_detail.mode == "group"
+    and (.activation_detail.token | type == "string" and length > 0)
+    and (.activation_detail.chat.uid | type == "string" and startswith("cht_"))
+    and ((.activation_detail.participants // []) | length > 0)
+    and all(.activation_detail.participants[]; (.uid | type == "string" and startswith("cp_")) and (.verification_code | type == "string" and length > 0))
+  ' "$INSTALL_STATE_FILE" >/dev/null
+}
+
+plow_state_matches_mode() {
+  local requested_mode="$1"
+  [[ -f "$PLOW_STATE_FILE" ]] || return 1
+  strict_state_file "$PLOW_STATE_FILE" || return 1
+  if [[ "$requested_mode" == "solo" ]]; then
+    [[ ! -f "$INSTALL_STATE_FILE" ]] && return 0
+    jq -e '(.activation_detail.mode // .interview.mode // "solo") == "solo"' "$INSTALL_STATE_FILE" >/dev/null 2>&1
+    return
+  fi
+  if [[ "$requested_mode" == "group" ]]; then
+    jq -e --arg chat_uid "$(jq -r '.chat_uid' "$PLOW_STATE_FILE")" '
+      .interview.mode == "group"
+      and .activation == "complete"
+      and .activation_detail.mode == "group"
+      and .activation_detail.chat_active == true
+      and .activation_detail.chat.uid == $chat_uid
+    ' "$INSTALL_STATE_FILE" >/dev/null 2>&1
+    return
+  fi
+  return 1
 }
 
 cmd_activate_solo() {
@@ -583,7 +611,10 @@ plow_ws_listen_once() {
       try { ws.close(); } catch {}
       process.exit(68);
     }, Number(process.env.DOMO_WS_TIMEOUT_MS || 300000));
-    ws.addEventListener("open", () => { opened = true; });
+    ws.addEventListener("open", () => {
+      opened = true;
+      console.log(JSON.stringify({ type: "domo_ws_open" }));
+    });
     ws.addEventListener("message", (event) => {
       const text = String(event.data);
       console.log(text);
@@ -607,13 +638,16 @@ handle_group_ws_frame() {
   local frame="$1" type uid name provider pending
   type="$(printf '%s' "$frame" | jq -r '.type // empty')"
   case "$type" in
-    connected)
-      log "Plow websocket connected; waiting for member verification."
+    domo_ws_open)
+      log "Plow websocket established; waiting for member verification."
       if [[ "$GROUP_CODES_REVEALED" -eq 0 ]]; then
         dashboard_group_members_from_detail
         print_group_member_codes
         GROUP_CODES_REVEALED=1
       fi
+      ;;
+    connected)
+      log "Ignoring undocumented Plow websocket connected frame."
       ;;
     participant_verified)
       uid="$(printf '%s' "$frame" | jq -r '.participant.uid // empty')"
@@ -742,6 +776,10 @@ EOF
   [[ "$chat_uid" == cht_* ]] || { err "POST /v1/chats response missing chat uid"; return 1; }
 
   persist_group_activation_detail "$token" "$response" "$line_json" "$chat_json"
+  activation_detail_is_group_ready || {
+    err "group activation_detail failed strict participant validation"
+    return 1
+  }
 }
 
 cmd_activate_group() {
@@ -783,18 +821,24 @@ cmd_activate() {
   if [[ -n "$explicit_mode" ]]; then
     if [[ "$explicit_mode" == "group" ]]; then
       [[ "${#members[@]}" -gt 0 ]] || { err "activate --group requires at least one member name"; return 2; }
-      write_install_mode group "${members[@]}"
+      if [[ "$force" -eq 0 ]] && activation_detail_is_group_ready; then
+        log "Existing group activation_detail found; reconnecting without rewriting $INSTALL_STATE_FILE"
+      else
+        write_install_mode group "${members[@]}"
+      fi
     else
       write_install_mode solo
     fi
   fi
 
-  if [[ "$force" -eq 0 && -f "$PLOW_STATE_FILE" ]] && strict_state_file "$PLOW_STATE_FILE"; then
+  local mode
+  mode="$(activation_mode)"
+  if [[ "$force" -eq 0 ]] && plow_state_matches_mode "$mode"; then
     log "already activated (state.json has a valid token). Use 'activate --force' to redo."
     return 0
   fi
 
-  case "$(activation_mode)" in
+  case "$mode" in
     solo) cmd_activate_solo ;;
     group) cmd_activate_group ;;
     *) err "unknown activation mode in $INSTALL_STATE_FILE"; return 2 ;;
@@ -895,13 +939,13 @@ auto_text_stub_code() {
 }
 
 auto_text_group_stub_codes() {
-  local base_url="$1" state_file="$2" seen_file="$3"
+  local base_url="$1" state_file="$2" seen_file="$3" min_ws_connect="${4:-0}"
   local codes ws_connect
   trap 'exit 0' TERM INT
   while :; do
     if [[ -f "$state_file" ]]; then
       ws_connect="$(curl -fsS "$base_url/_stub/calls" 2>/dev/null | jq -r '.ws_connect // 0' 2>/dev/null || printf '0')"
-      if [[ "$ws_connect" -gt 0 ]]; then
+      if [[ "$ws_connect" -gt "$min_ws_connect" ]]; then
         codes="$(jq -r '.activation_detail.participants[]? | select(.status != "verified") | .verification_code // empty' "$state_file" 2>/dev/null || true)"
       else
         codes=""
@@ -919,6 +963,23 @@ auto_text_group_stub_codes() {
     fi
     sleep 0.2
   done
+}
+
+wait_for_group_activation_detail() {
+  local state_file="$1" timeout="$2"
+  local deadline=$(( $(date +%s) + timeout ))
+  while [[ "$(date +%s)" -lt "$deadline" ]]; do
+    if [[ -f "$state_file" ]] && jq -e '
+      .activation_detail.mode == "group"
+      and (.activation_detail.chat.uid | type == "string" and startswith("cht_"))
+      and ((.activation_detail.participants // []) | length > 0)
+      and all(.activation_detail.participants[]; (.uid | type == "string" and startswith("cp_")) and (.verification_code | type == "string" and length > 0))
+    ' "$state_file" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
 }
 
 cmd_selftest() {
@@ -1030,7 +1091,8 @@ cmd_group_selftest() {
     return 1
   }
 
-  local root stub_dir home server_info base_url state_file install_state calls_file text_pid member_pid activate_rc chat_uid
+  local root stub_dir home server_info base_url state_file install_state calls_file text_pid member_pid first_pid activate_rc chat_uid before_codes after_codes before_ws
+  local stale_home stale_rc
   root="$(mktemp -d "${TMPDIR:-/tmp}/domo-activate-group-selftest.XXXXXX")"
   stub_dir="$root/stub"
   home="$root/home"
@@ -1038,6 +1100,34 @@ cmd_group_selftest() {
   state_file="$home/.claude/plow-chat/state.json"
   install_state="$home/install-state.json"
   calls_file="$root/calls.json"
+
+  stale_home="$root/stale-solo-home"
+  mkdir -p "$stale_home/.claude/plow-chat"
+  chmod 700 "$stale_home/.claude/plow-chat"
+  jq -n '{base_url:"http://127.0.0.1:9", token:"solo-token", chat_uid:"cht_solo_stale"}' > "$stale_home/.claude/plow-chat/state.json"
+  chmod 600 "$stale_home/.claude/plow-chat/state.json"
+  jq -n '{interview:{mode:"solo",status:"collected",members:[]}, activation:"complete", activation_detail:{mode:"solo",status:"verified"}}' > "$stale_home/install-state.json"
+  chmod 600 "$stale_home/install-state.json"
+  set +e
+  PLOW_CHAT_BASE_URL="http://127.0.0.1:9" \
+  DOMO_HOME="$stale_home" \
+    "$SCRIPT_PATH" activate --group "You" >"$root/stale-group.out" 2>"$root/stale-group.err"
+  stale_rc=$?
+  set -e
+  [[ "$stale_rc" -ne 0 ]] || {
+    err "stale solo state incorrectly short-circuited group activation"
+    cat "$root/stale-group.err" >&2 || true
+    return 1
+  }
+  ! grep -F "already activated" "$root/stale-group.out" "$root/stale-group.err" >/dev/null 2>&1 || {
+    err "stale solo state reported already activated for group request"
+    return 1
+  }
+  jq -e '.interview.mode == "group" and (.activation_detail // null) == null' "$stale_home/install-state.json" >/dev/null || {
+    err "stale solo group request did not rewrite interview mode cleanly"
+    jq . "$stale_home/install-state.json" >&2 || true
+    return 1
+  }
 
   log "Starting Plow stub for group selftest: $root"
   PLOW_STUB_STATE_DIR="$stub_dir" bun run "$PLOW_STUB" >"$root/stub.out" 2>"$root/stub.err" &
@@ -1048,11 +1138,40 @@ cmd_group_selftest() {
   }
   base_url="$(jq -r '.base_url' "$server_info")"
   mkdir -p "$home"
+  jq -n '{ws_send_connected:false}' \
+    | curl -fsS -X POST "$base_url/_stub/config" -H 'Content-Type: application/json' -d @- >/dev/null
 
   auto_text_stub_code "$base_url" "$home/.claude/plow-chat/activation.json" "$root/seen-owner-codes" &
   text_pid="$!"
   PIDS+=("$text_pid")
-  auto_text_group_stub_codes "$base_url" "$install_state" "$root/seen-member-codes" &
+
+  PLOW_CHAT_BASE_URL="$base_url" \
+  DOMO_HOME="$home" \
+  DOMO_ACTIVATION_TIMEOUT_SECONDS=20 \
+  DOMO_ACTIVATION_POLL_INTERVAL_SECONDS=1 \
+  DOMO_WS_TIMEOUT_MS=20000 \
+    "$SCRIPT_PATH" activate --group "You" "Pat" >"$root/group-first.out" 2>"$root/group-first.err" &
+  first_pid="$!"
+  PIDS+=("$first_pid")
+
+  wait_for_group_activation_detail "$install_state" 20 || {
+    err "group selftest first run did not create resumable activation_detail"
+    sed 's/^/[domo-activate] group-first stderr: /' "$root/group-first.err" | tail -80
+    return 1
+  }
+  before_codes="$(jq -c '[.activation_detail.participants[] | {uid, code:.verification_code}]' "$install_state")"
+  curl -fsS "$base_url/_stub/calls" > "$root/calls-before-restart.json"
+  jq -e '.chats == 1' "$root/calls-before-restart.json" >/dev/null || {
+    err "group selftest first run did not create exactly one chat"
+    jq . "$root/calls-before-restart.json" >&2 || true
+    return 1
+  }
+  kill "$first_pid" >/dev/null 2>&1 || true
+  wait "$first_pid" >/dev/null 2>&1 || true
+  kill "$text_pid" >/dev/null 2>&1 || true
+
+  before_ws="$(curl -fsS "$base_url/_stub/calls" | jq -r '.ws_connect // 0')"
+  auto_text_group_stub_codes "$base_url" "$install_state" "$root/seen-member-codes" "$before_ws" &
   member_pid="$!"
   PIDS+=("$member_pid")
 
@@ -1065,13 +1184,19 @@ cmd_group_selftest() {
     "$SCRIPT_PATH" activate --group "You" "Pat" >"$root/group.out" 2>"$root/group.err"
   activate_rc=$?
   set -e
-  kill "$text_pid" "$member_pid" >/dev/null 2>&1 || true
+  kill "$member_pid" >/dev/null 2>&1 || true
 
   if [[ "$activate_rc" -ne 0 ]]; then
     err "stub group activation failed with rc=$activate_rc"
     sed 's/^/[domo-activate] group stderr: /' "$root/group.err" | tail -80
     return "$activate_rc"
   fi
+  after_codes="$(jq -c '[.activation_detail.participants[] | {uid, code:.verification_code}]' "$install_state")"
+  [[ "$after_codes" == "$before_codes" ]] || {
+    err "group selftest restart changed member uid/code values"
+    printf '[domo-activate] before: %s\n[domo-activate] after:  %s\n' "$before_codes" "$after_codes" >&2
+    return 1
+  }
 
   strict_state_file "$state_file" || {
     err "group selftest state file failed strict validation"
@@ -1105,8 +1230,18 @@ cmd_group_selftest() {
     jq . "$calls_file" >&2 || true
     return 1
   }
+  while IFS= read -r code; do
+    [[ -n "$code" ]] || continue
+    grep -F "$code" "$root/group.err" >/dev/null || {
+      err "group selftest did not reveal member code after websocket open: $code"
+      return 1
+    }
+  done < "$root/seen-member-codes"
 
   log "PASS group selftest activated against stub"
+  log "PASS group restart reconnected without recreating chat; member codes preserved"
+  log "PASS group member codes revealed after local websocket open without server connected frame"
+  log "PASS stale solo state does not short-circuit activate --group"
   log "PASS group participants verified: $(jq -r '[.activation_detail.participants[].display_name] | join(", ")' "$install_state")"
   log "PASS group state shape and chmod-600: $state_file (chat_uid=$chat_uid)"
   log "PASS group call sequence: $(jq -r '[.sequence[].path] | join(" -> ")' "$calls_file")"

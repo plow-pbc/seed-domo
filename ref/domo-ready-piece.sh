@@ -706,6 +706,7 @@ cmd_selftest() {
   }
 
   local root stub_dir server_info base_url home state_file chat_uid text_pid activate_rc calls_file send_out probe_log probe_pid before_ws after_ws
+  local group_home
   root="$(mktemp -d "${TMPDIR:-/tmp}/domo-ready-selftest.XXXXXX")"
   stub_dir="$root/stub"
   server_info="$stub_dir/server-info"
@@ -784,9 +785,45 @@ cmd_selftest() {
     return 1
   }
 
+  group_home="$root/group-ready-home"
+  mkdir -p "$group_home"
+  set_domo_home "$group_home"
+  mkdir -p "$PLOW_DIR"
+  jq -n '{base_url:"http://127.0.0.1:1", token:"group-token", chat_uid:"cht_group_ready"}' > "$PLOW_STATE_FILE"
+  chmod 600 "$PLOW_STATE_FILE"
+  jq -n '{
+    interview:{mode:"group",status:"collected",members:["Alex","Pat"]},
+    activation:"complete",
+    activation_detail:{
+      mode:"group",
+      chat_active:true,
+      participants:[
+        {uid:"cp_ready_001",display_name:"Alex",status:"verified"},
+        {uid:"cp_ready_002",display_name:"Pat",status:"verified"}
+      ]
+    }
+  }' > "$INSTALL_STATE_FILE"
+  chmod 600 "$INSTALL_STATE_FILE"
+  write_default_config
+  jq -e '
+    .mode == "group"
+    and (.system_prompt | contains("verified household group text"))
+    and (.system_prompt | contains("Alex"))
+    and (.system_prompt | contains("Pat"))
+  ' "$READY_CONFIG_FILE" >/dev/null || {
+    err "group ready config did not record group prompt/member names"
+    jq . "$READY_CONFIG_FILE" >&2 || true
+    return 1
+  }
+  grep -F "This is a group household" "$WORKSPACE/CLAUDE.md" >/dev/null || {
+    err "group CLAUDE.md did not use group household prompt"
+    return 1
+  }
+
   log "PASS Piece-3 stub activation produced chmod-600 state: $state_file"
   log "PASS channel daemon connected: ws_connect $before_ws -> $after_ws"
   log "PASS ready text recorded by stub: $READY_TEXT"
+  log "PASS group ready config authors group prompt with member names"
   log "PASS outbound call sequence: $(jq -r '[.sequence[].path] | join(" -> ")' "$calls_file")"
   log "Selftest artifacts: $root"
 }
