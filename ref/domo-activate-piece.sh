@@ -550,6 +550,8 @@ cmd_activate_solo() {
   write_activation_file "$response"
   dashboard_activation_waiting "$activation_message" "$send_to"
 
+  local line_detail=""
+  [[ -n "$line_uid" ]] && line_detail=" (line: $line_uid)"
   cat >&2 <<EOF
 
 [domo-activate] ============================================================
@@ -561,7 +563,7 @@ cmd_activate_solo() {
 [domo-activate]
 [domo-activate]   to:  $send_to
 [domo-activate]
-[domo-activate] (line: ${line_uid:-unknown}) Polling for verification up to ${ACTIVATION_TIMEOUT_SECONDS}s...
+[domo-activate] Polling for verification up to ${ACTIVATION_TIMEOUT_SECONDS}s...$line_detail
 [domo-activate] ============================================================
 EOF
 
@@ -759,7 +761,7 @@ start_group_activation() {
 [domo-activate]
 [domo-activate]   to:  $send_to
 [domo-activate]
-[domo-activate] (line: ${line_uid:-unknown}) Polling for owner verification up to ${ACTIVATION_TIMEOUT_SECONDS}s...
+[domo-activate] Polling for owner verification up to ${ACTIVATION_TIMEOUT_SECONDS}s...
 [domo-activate] ============================================================
 EOF
 
