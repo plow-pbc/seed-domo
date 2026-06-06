@@ -10,6 +10,7 @@
 //   POST /v1/auth/activate/redeem
 //   GET  /v1/lines
 //   POST /v1/chats
+//   DELETE /v1/chats/:chat
 //   POST /v1/chats/:chat/invitations/:participant/resend
 //   POST /v1/ws/ticket
 //   GET  /v1/ws?ticket=...
@@ -102,6 +103,7 @@ const calls: {
   redeem: number;
   lines: number;
   chats: number;
+  chat_deletes: number;
   resend: number;
   ws_ticket: number;
   ws_connect: number;
@@ -113,6 +115,7 @@ const calls: {
   redeem: 0,
   lines: 0,
   chats: 0,
+  chat_deletes: 0,
   resend: 0,
   ws_ticket: 0,
   ws_connect: 0,
@@ -327,6 +330,17 @@ function createChat(req: Request, body: Record<string, unknown>): Response {
   return json(chat, 201);
 }
 
+function deleteChat(req: Request, chatUid: string): Response {
+  calls.chat_deletes++;
+  record("DELETE", `/v1/chats/${chatUid}`);
+  const auth = requireToken(req);
+  if (auth instanceof Response) return auth;
+  if (!chats.has(chatUid)) return error(404, "unknown chat");
+  chats.delete(chatUid);
+  messages.delete(chatUid);
+  return json({ deleted: true, uid: chatUid });
+}
+
 function resendInvitation(req: Request, chatUid: string, participantUid: string): Response {
   calls.resend++;
   record("POST", `/v1/chats/${chatUid}/invitations/${participantUid}/resend`);
@@ -520,6 +534,10 @@ const server = Bun.serve({
       } catch (err) {
         return error(400, err instanceof Error ? err.message : "invalid chat request");
       }
+    }
+    {
+      const deleteMatch = pathname.match(/^\/v1\/chats\/([^/]+)$/);
+      if (deleteMatch && req.method === "DELETE") return deleteChat(req, deleteMatch[1]);
     }
     {
       const resendMatch = pathname.match(/^\/v1\/chats\/([^/]+)\/invitations\/([^/]+)\/resend$/);

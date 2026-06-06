@@ -27,6 +27,7 @@
 #   status    resolved config + daemon liveness + channel state (no secrets)
 #   logs      tail the daemon logfile
 #   doctor    read-only preflight
+#   reset     full teardown: stop daemon, delete Plow chat, logout auth, rm DOMO_HOME
 #
 set -euo pipefail
 
@@ -71,6 +72,9 @@ PLOW_ACTIVATION_FILE="$PLOW_DIR/activation.json" # transient pre-token secret
 PLOW_CHANNEL_DIR="$SCRIPT_DIR/channels/plow-chat" # channel server dir (registered as an MCP server)
 PLOW_BASE_URL="${PLOW_CHAT_BASE_URL:-https://api.plow.co}"
 SPAWN_CONFIRM="$SCRIPT_DIR/bin/spawn-confirm.expect" # drives the dev-channels confirmation for `start`
+ACTIVATE_PIECE="$SCRIPT_DIR/domo-activate-piece.sh"
+LOGIN_PIECE="$SCRIPT_DIR/domo-login-piece.sh"
+READY_PIECE="$SCRIPT_DIR/domo-ready-piece.sh"
 DOMO_INSTALL_TEST_MODE="${DOMO_INSTALL_TEST_MODE:-0}"
 ACTIVATION_TIMEOUT_SECONDS=300
 ACTIVATION_POLL_INTERVAL_SECONDS=3
@@ -1334,15 +1338,13 @@ cmd_login() {
 # Compute a pkill -f pattern that uniquely identifies THIS instance's claude
 # process. The pinned session UUID is the tightest signature — it appears in the
 # argv as `--session-id <uuid>` / `--resume <uuid>` and is unique per instance, so
-# two Domo instances under different DOMO_HOME never reap each other. Fall back to
-# the channel signature only if no pinned UUID is in use (e.g. DOMO_SESSION_FALLBACK).
+# two Domo instances under different DOMO_HOME never reap each other. If no pinned
+# UUID exists, fall back to the workspace path: it is conservative and instance
+# scoped, unlike the generic channel name.
 daemon_kill_pattern() {
   local sid; sid="$(read_session_id)"
   if [[ -n "$sid" ]]; then printf '%s' "$sid"; return; fi
-  case "$DOMO_CHANNEL" in
-    plow-chat) printf '%s' "server:plow-chat" ;;
-    *)         printf '%s' "$WORKSPACE" ;;
-  esac
+  printf '%s' "$WORKSPACE"
 }
 
 # Persist the kill pattern at start so stop can reap the real claude even if the
@@ -1548,6 +1550,104 @@ cmd_stop() {
       ;;
   esac
   log "Daemon stopped."
+}
+
+# ---------------------------------------------------------------------------
+# reset — full, idempotent teardown for one DOMO_HOME.
+# Order matters: Plow cleanup and Claude logout need files inside DOMO_HOME, so
+# the local tree is removed only after the external state has been handled.
+# ---------------------------------------------------------------------------
+safe_remove_domo_home() {
+  local target="${DOMO_HOME%/}"
+  [[ -n "$target" ]] || die "DOMO_HOME resolved to an empty path; refusing to reset."
+  [[ "$target" != "/" ]] || die "DOMO_HOME is /; refusing to reset."
+  [[ "$target" != "$HOME" ]] || die "DOMO_HOME is HOME; refusing to reset."
+
+  if [[ -e "$target" ]]; then
+    local target_abs repo_abs
+    target_abs="$(cd "$target" && pwd -P)"
+    repo_abs="$(cd "$REPO_ROOT" && pwd -P)"
+    case "$repo_abs" in
+      "$target_abs"|"$target_abs"/*) die "DOMO_HOME contains this checkout ($repo_abs); refusing to remove $target_abs." ;;
+    esac
+    rm -rf -- "$target"
+    [[ ! -e "$target" ]] || die "failed to remove DOMO_HOME=$target"
+    log "Removed DOMO_HOME=$target"
+  else
+    log "DOMO_HOME already absent: $target"
+  fi
+}
+
+cmd_reset() {
+  export_config_dir
+  log "Resetting Domo instance at DOMO_HOME=$DOMO_HOME"
+
+  if [[ ! -d "$DOMO_HOME" ]]; then
+    log "DOMO_HOME already absent; no local daemon metadata or state to tear down."
+    safe_remove_domo_home
+    log "Reset complete."
+    return 0
+  fi
+
+  local rc
+  log "Step 1/4: stopping daemon(s)."
+  set +e
+  cmd_stop
+  rc=$?
+  set -e
+  [[ "$rc" -eq 0 ]] || die "main daemon stop failed with rc=$rc"
+
+  # Older piece-based installs used domo-ready.{pid,sig,tmux}; keep reset able to
+  # tear those down too while the CLI consolidates.
+  if [[ -x "$READY_PIECE" ]]; then
+    set +e
+    DOMO_HOME="$DOMO_HOME" "$READY_PIECE" stop
+    rc=$?
+    set -e
+    [[ "$rc" -eq 0 ]] || die "ready-piece daemon stop failed with rc=$rc"
+  else
+    warn "ready-piece stop unavailable at $READY_PIECE"
+  fi
+
+  log "Step 2/4: deleting Plow chat."
+  if [[ -f "$PLOW_STATE_FILE" ]]; then
+    [[ -x "$ACTIVATE_PIECE" ]] || die "activate cleanup piece missing or not executable: $ACTIVATE_PIECE"
+    set +e
+    DOMO_HOME="$DOMO_HOME" "$ACTIVATE_PIECE" cleanup
+    rc=$?
+    set -e
+    [[ "$rc" -eq 0 ]] || die "Plow chat cleanup failed with rc=$rc; leaving DOMO_HOME intact for retry."
+  else
+    log "No Plow state file to clean up: $PLOW_STATE_FILE"
+  fi
+
+  log "Step 3/4: logging out Claude auth for this isolated config."
+  if [[ -d "$CONFIG_DIR" ]]; then
+    [[ -x "$LOGIN_PIECE" ]] || die "login logout piece missing or not executable: $LOGIN_PIECE"
+    local logout_rc status_out status_rc
+    set +e
+    DOMO_HOME="$DOMO_HOME" "$LOGIN_PIECE" logout
+    logout_rc=$?
+    set -e
+    [[ "$logout_rc" -eq 0 ]] || warn "Claude auth logout returned rc=$logout_rc; checking auth status before deciding."
+
+    set +e
+    status_out="$(DOMO_HOME="$DOMO_HOME" "$LOGIN_PIECE" status 2>&1)"
+    status_rc=$?
+    set -e
+    printf '%s\n' "$status_out" >&2
+    if printf '%s\n' "$status_out" | grep -q 'loggedIn=false'; then
+      log "Claude auth status confirmed loggedIn=false (status rc=$status_rc)."
+    else
+      die "Claude auth status did not confirm loggedIn=false after logout; leaving DOMO_HOME intact."
+    fi
+  else
+    log "Claude config dir already absent: $CONFIG_DIR"
+  fi
+
+  log "Step 4/4: removing local state tree."
+  safe_remove_domo_home
+  log "Reset complete."
 }
 
 # ---------------------------------------------------------------------------
@@ -1812,6 +1912,8 @@ Commands:
   logs [--raw] [--no-follow]
                    Readable transcript feed (📥/📤/⚙). --raw = PTY/TUI capture.
   doctor           Read-only preflight; non-zero exit on any failed assertion.
+  reset            Full teardown for this DOMO_HOME: stop daemon(s), delete the
+                   Plow chat, logout Claude auth, then remove DOMO_HOME.
 
 Environment:
   DOMO_CHANNEL            plow-chat (default)
@@ -1837,6 +1939,7 @@ main() {
     status)   shift; cmd_status "$@" ;;
     logs)     shift; cmd_logs "$@" ;;
     doctor)   shift; cmd_doctor "$@" ;;
+    reset)    shift; cmd_reset "$@" ;;
     ""|-h|--help|help) usage; [[ -z "$cmd" ]] && exit 1 || exit 0 ;;
     *) usage; die "unknown command: $cmd" ;;
   esac

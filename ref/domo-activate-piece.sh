@@ -164,6 +164,46 @@ plow_http() {
   cat "$out"
 }
 
+plow_delete_chat() {
+  local chat_uid="$1" token="$2"
+  local url="${PLOW_BASE_URL%/}/v1/chats/$chat_uid" out err_file config="" code rc
+  out="$(mktemp "${TMPDIR:-/tmp}/domo-plow-body.XXXXXX")"
+  err_file="$(mktemp "${TMPDIR:-/tmp}/domo-plow-err.XXXXXX")"
+  TMP_FILES+=("$out" "$err_file")
+
+  config="$(umask 077; mktemp "${TMPDIR:-/tmp}/domo-plow-curl.XXXXXX")"
+  TMP_FILES+=("$config")
+  jq -rn --arg token "$token" '"header = \"Authorization: Bearer \($token)\"\n"' > "$config"
+  chmod 600 "$config"
+
+  set +e
+  code="$(curl -sS -o "$out" -w "%{http_code}" -X DELETE "$url" -H 'Content-Type: application/json' --config "$config" 2>"$err_file")"
+  rc=$?
+  set -e
+
+  if [[ "$rc" -ne 0 ]]; then
+    local msg
+    msg="$(tr '\n' ' ' < "$err_file" | sed 's/[[:space:]]\+/ /g')"
+    err "Plow API DELETE /v1/chats/$chat_uid failed: ${msg:-curl exit $rc}"
+    return "$rc"
+  fi
+
+  case "$code" in
+    2??)
+      log "Remote Plow chat deleted."
+      ;;
+    404|410)
+      log "Remote Plow chat already absent (HTTP $code)."
+      ;;
+    *)
+      local response
+      response="$(tr '\n' ' ' < "$out" | sed 's/[[:space:]]\+/ /g')"
+      err "Plow API DELETE /v1/chats/$chat_uid returned HTTP ${code:-000}: ${response:-<empty response>}"
+      return 1
+      ;;
+  esac
+}
+
 write_activation_file() {
   local response="$1" tmp
   tmp="$(umask 077; mktemp "$PLOW_DIR/.activation.json.XXXXXX")"
@@ -375,7 +415,7 @@ cmd_cleanup() {
 
   PLOW_BASE_URL="$base_url"
   log "Soft-deleting Plow chat $chat_uid at ${PLOW_BASE_URL%/} ..."
-  plow_http DELETE "/v1/chats/$chat_uid" "" "$token" 0 >/dev/null
+  plow_delete_chat "$chat_uid" "$token"
   rm -f "$PLOW_STATE_FILE" "$PLOW_ACTIVATION_FILE"
   log "CLEANED_UP chat_uid=$chat_uid local_state_removed=true"
 }
