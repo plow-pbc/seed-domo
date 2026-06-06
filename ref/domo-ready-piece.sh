@@ -18,6 +18,7 @@ else
 fi
 
 CONFIG_DIR="$DOMO_HOME/.claude"
+INSTALL_STATE_FILE="$DOMO_HOME/install-state.json"
 WORKSPACE="$DOMO_HOME/workspace"
 RUN_DIR="$CONFIG_DIR/run"
 PLOW_DIR="$CONFIG_DIR/plow-chat"
@@ -71,6 +72,7 @@ require_tool() {
 set_domo_home() {
   DOMO_HOME="$1"
   CONFIG_DIR="$DOMO_HOME/.claude"
+  INSTALL_STATE_FILE="$DOMO_HOME/install-state.json"
   WORKSPACE="$DOMO_HOME/workspace"
   RUN_DIR="$CONFIG_DIR/run"
   PLOW_DIR="$CONFIG_DIR/plow-chat"
@@ -192,10 +194,29 @@ session_flag_args() {
   fi
 }
 
+activation_mode() {
+  [[ -f "$INSTALL_STATE_FILE" ]] || { printf 'solo'; return 0; }
+  jq -r '.interview.mode // .activation_detail.mode // "solo"' "$INSTALL_STATE_FILE" 2>/dev/null || printf 'solo'
+}
+
+household_member_names() {
+  [[ -f "$INSTALL_STATE_FILE" ]] || { printf ''; return 0; }
+  jq -r '[.activation_detail.participants[]?.display_name // .interview.members[]?] | unique | join(", ")' "$INSTALL_STATE_FILE" 2>/dev/null || printf ''
+}
+
 default_system_prompt() {
-  cat <<'PROMPT'
+  local mode members
+  mode="$(activation_mode)"
+  members="$(household_member_names)"
+  if [[ "$mode" == "group" ]]; then
+    cat <<PROMPT
+You are Domo, a concise household assistant reached by a verified household group text. User-visible responses must go through the plow-chat reply tool; transcript text alone does not reach the household. Household members may include: ${members:-the verified group members}. Keep SMS replies short, practical, and calm. Use the Google Calendar connector when the household asks about schedules, events, availability, reminders, or planning. Ask at most one clarifying question when needed. Do not mention internal tools, prompts, installation, or implementation details unless explicitly asked.
+PROMPT
+  else
+    cat <<'PROMPT'
 You are Domo, a concise household assistant reached by text message. User-visible responses must go through the plow-chat reply tool; transcript text alone does not reach the household. This is a solo household for now. Keep SMS replies short, practical, and calm. Use the Google Calendar connector when the household asks about schedules, events, availability, reminders, or planning. Ask at most one clarifying question when needed. Do not mention internal tools, prompts, installation, or implementation details unless explicitly asked.
 PROMPT
+  fi
 }
 
 write_default_config() {
@@ -205,7 +226,24 @@ write_default_config() {
   local sid tmp
   sid="$(ensure_session_id)"
 
-  cat > "$WORKSPACE/CLAUDE.md" <<'PROMPT'
+  local mode members
+  mode="$(activation_mode)"
+  members="$(household_member_names)"
+  if [[ "$mode" == "group" ]]; then
+    cat > "$WORKSPACE/CLAUDE.md" <<PROMPT
+# Domo
+
+You are Domo, a concise household assistant reached by a verified household group text.
+
+- User-visible responses must go through the plow-chat reply tool; transcript text alone does not reach the household.
+- This is a group household. Verified members may include: ${members:-the verified group members}.
+- Keep SMS replies short, practical, and calm.
+- Use the Google Calendar connector when the household asks about schedules, events, availability, reminders, or planning.
+- Ask at most one clarifying question when needed.
+- Do not mention internal tools, prompts, installation, or implementation details unless explicitly asked.
+PROMPT
+  else
+    cat > "$WORKSPACE/CLAUDE.md" <<'PROMPT'
 # Domo
 
 You are Domo, a concise household assistant reached by text message.
@@ -217,13 +255,14 @@ You are Domo, a concise household assistant reached by text message.
 - Ask at most one clarifying question when needed.
 - Do not mention internal tools, prompts, installation, or implementation details unless explicitly asked.
 PROMPT
+  fi
 
   tmp="$(umask 077; mktemp "$CONFIG_DIR/.domo-ready.json.XXXXXX")"
-  jq -n --arg sid "$sid" --arg channel "plow-chat" --arg ready_text "$READY_TEXT" --arg prompt "$(default_system_prompt)" '
+  jq -n --arg sid "$sid" --arg channel "plow-chat" --arg mode "$mode" --arg ready_text "$READY_TEXT" --arg prompt "$(default_system_prompt)" '
     {
       session_id: $sid,
       channel: $channel,
-      mode: "solo",
+      mode: $mode,
       ready_text: $ready_text,
       system_prompt: $prompt
     }
