@@ -116,19 +116,20 @@ NOT copy `ref/domo-login-piece.sh` or depend on any committed login script.
 
 5. Generate any prompt-confirmation helper needed for the Claude first-run TUI.
    It MUST match stable label anchors, not brittle full-screen text snapshots,
-   because Claude can fragment prompts across terminal redraws. Required anchors:
+   because Claude can fragment prompts across terminal redraws. Required anchors
+   are exactly:
 
    - If the prompt contains `Yes, try it`, send `2` to decline the fullscreen
      recommendation path.
-   - If the prompt contains a development-channel/default-selection label such
-     as `Yes` plus `development` or `channel`, press Enter.
-   - If the prompt contains a theme/default-selection label such as `Dark`,
-     `Light`, `theme`, or `appearance`, press Enter.
-   - If the prompt contains a trust/default-selection label such as `trust`,
-     `Trust`, `workspace`, `folder`, or `directory`, press Enter.
+   - If the prompt matches the monolith default-enter label regex
+     `text style|Choose the text|Let.s get started|trust the files|trust this folder|project.*trust|Yes, I trust`,
+     press Enter.
 
    The matcher SHOULD tolerate ANSI escapes, line wraps, and fragmented prompt
    text; it SHOULD strip control sequences before applying these regex anchors.
+   It MUST NOT send `2` based on broad renderer words such as `fullscreen` or
+   `Fullscreen`, because a fragmented prompt can expose those words before the
+   stable `Yes, try it` option label appears.
 
 6. Generate the auth-status helper. It MUST run:
 
@@ -223,3 +224,16 @@ Verification runs against the just-generated real instance.
 
 6. The logout helper MUST exist and be executable, but normal install
    verification MUST NOT run it.
+
+7. The generated prompt-confirmation helper MUST contain the required stable
+   anchors and no broad fullscreen fallback. This auth-independent check MUST
+   pass:
+
+   ```bash
+   prompt="<HOME>/runtime/claude-instance/prompt-confirm.expect"
+   grep -F 'Yes, try it' "$prompt"
+   grep -F 'send "2\r"' "$prompt"
+   grep -F 'text style|Choose the text|Let.s get started|trust the files|trust this folder|project.*trust|Yes, I trust' "$prompt"
+   ! grep -F 'fullscreen|Fullscreen' "$prompt"
+   ! grep -F 'Fullscreen|fullscreen' "$prompt"
+   ```
