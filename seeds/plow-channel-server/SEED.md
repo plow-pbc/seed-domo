@@ -33,13 +33,16 @@ Generated runtime files MUST embed that literal path and MUST NOT read
 - **Baked Domo home** - the absolute install home selected before generation.
   This slice writes only under that home.
 - **Plow channel server runtime dir** -
-  `<HOME>/runtime/plow-channel-server`, containing:
-  - `server.ts` - the generated MCP stdio channel server;
-  - `package.json` - Bun package metadata and `start` script;
-  - `.mcp.json` - Claude MCP registration metadata for the `plow-chat` server;
-  - `.npmrc` - dependency install policy when needed;
-  - `review-checklist.md` - named review checklist for invariants not directly
-    exercised by local Plow, including watchdog and backoff pins.
+  `<HOME>/runtime/plow-channel-server`, the externally consumed channel
+  directory passed to `domo-runtime` registration. It MUST contain the Claude
+  MCP registration metadata and whatever generated entrypoint or support files
+  that metadata invokes. Internal filenames, file splits, package metadata, and
+  dependency-management files are the generating agent's choice unless another
+  slice consumes them across a seam.
+- **Plow channel MCP registration** -
+  `<HOME>/runtime/plow-channel-server/.mcp.json`, the externally consumed Claude
+  MCP registration metadata for the `plow-chat` server. It MUST invoke an
+  entrypoint under `<HOME>/runtime/plow-channel-server`.
 - **Plow local state dir** - `<HOME>/.claude/plow-chat`, chmod 700.
 - **Plow channel state** - `<HOME>/.claude/plow-chat/state.json`, chmod 600,
   exactly `{base_url, token, chat_uid}` as written by `plow-activation`.
@@ -73,13 +76,19 @@ committed channel implementation as the installed runtime.
    <HOME>/.claude/plow-chat
    ```
 
-3. Generate `server.ts`, `package.json`, `.mcp.json`, `.npmrc`, and
-   `review-checklist.md`. The generated server MUST contain the baked absolute
-   `<HOME>` literal and MUST derive its state path, high-water mark path, and
-   connected marker path from that literal. It MUST NOT read `DOMO_HOME`,
-   `PLOW_CHAT_STATE`, or `PLOW_CHAT_CONNECTED_MARKER`.
+3. Generate a launchable MCP stdio channel server under
+   `<HOME>/runtime/plow-channel-server` and generate the `.mcp.json`
+   registration metadata that invokes it. The generated server MUST contain the
+   baked absolute `<HOME>` literal and MUST derive its state path, high-water
+   mark path, and connected marker path from that literal. It MUST NOT read
+   `DOMO_HOME`, `PLOW_CHAT_STATE`, or `PLOW_CHAT_CONNECTED_MARKER`. Internal
+   implementation shape is otherwise deliberately unconstrained: the generating
+   agent MAY choose any filenames, module split, package metadata, or Bun launch
+   wrapper that satisfies the externally consumed registration and behavioral
+   gates.
 4. The generated `.mcp.json` MUST register one MCP server named `plow-chat`
-   whose command starts Bun in `<HOME>/runtime/plow-channel-server`.
+   whose command starts the generated entrypoint under
+   `<HOME>/runtime/plow-channel-server`.
 5. The generated MCP server MUST advertise:
 
    ```json
@@ -166,17 +175,19 @@ Verification runs against the just-generated real instance and generated files.
 Dev rehearsal runs against the local Plow and DTU named in
 `docs/testing/e2e-rehearsal.md`.
 
-1. The generated files MUST exist with expected privacy and package shape:
+1. The externally consumed interface paths MUST exist, while internal runtime
+   layout remains the generating agent's choice:
 
    ```bash
-   test -f "<HOME>/runtime/plow-channel-server/server.ts"
-   test -f "<HOME>/runtime/plow-channel-server/package.json"
+   test -d "<HOME>/runtime/plow-channel-server"
    test -f "<HOME>/runtime/plow-channel-server/.mcp.json"
-   test -f "<HOME>/runtime/plow-channel-server/.npmrc"
-   test -f "<HOME>/runtime/plow-channel-server/review-checklist.md"
    test -d "<HOME>/.claude/plow-chat"
-   jq -e '.scripts.start and .dependencies["@modelcontextprotocol/sdk"]' "<HOME>/runtime/plow-channel-server/package.json"
-   jq -e '.mcpServers["plow-chat"].command == "bun"' "<HOME>/runtime/plow-channel-server/.mcp.json"
+   test -f "<HOME>/.claude/plow-chat/state.json"
+   test "$(stat -f '%Lp' "<HOME>/.claude/plow-chat/state.json" 2>/dev/null || stat -c '%a' "<HOME>/.claude/plow-chat/state.json")" = 600
+   jq -e '.mcpServers["plow-chat"]' "<HOME>/runtime/plow-channel-server/.mcp.json"
+   jq -e '(.mcpServers["plow-chat"].command | type == "string" and length > 0)
+     and (.mcpServers["plow-chat"].args // [] | tostring | contains("<HOME>/runtime/plow-channel-server"))' \
+     "<HOME>/runtime/plow-channel-server/.mcp.json"
    ```
 
 2. No generated file in `<HOME>/runtime/plow-channel-server` MAY contain a
@@ -200,33 +211,33 @@ Dev rehearsal runs against the local Plow and DTU named in
 4. Static MCP and channel gates MUST pass:
 
    ```bash
-   server="<HOME>/runtime/plow-channel-server/server.ts"
-   grep -F 'claude/channel' "$server"
-   grep -F 'notifications/claude/channel' "$server"
-   grep -F 'Anything you want them to see MUST go through the reply tool' "$server"
-   grep -F 'name: '\''reply'\''' "$server"
-   grep -F 'required' "$server"
-   grep -F 'text' "$server"
-   grep -F 'provider_key' "$server"
-   grep -F 'chat_not_ready' "$server"
-   grep -F 'state.chat_uid' "$server"
+   runtime="<HOME>/runtime/plow-channel-server"
+   grep -R 'claude/channel' "$runtime"
+   grep -R 'notifications/claude/channel' "$runtime"
+   grep -R 'Anything you want them to see MUST go through the reply tool' "$runtime"
+   grep -R 'reply' "$runtime"
+   grep -R 'required' "$runtime"
+   grep -R 'text' "$runtime"
+   grep -R 'provider_key' "$runtime"
+   grep -R 'chat_not_ready' "$runtime"
+   grep -R 'state.chat_uid' "$runtime"
    ```
 
 5. Static behavioral pins MUST pass:
 
    ```bash
-   server="<HOME>/runtime/plow-channel-server/server.ts"
-   grep -F 'CONNECT_TIMEOUT_MS = 30000' "$server"
-   grep -F 'IDLE_TIMEOUT_MS = 90000' "$server"
-   grep -F 'INITIAL_BACKOFF_MS = 1000' "$server"
-   grep -F 'MAX_BACKOFF_MS = 30000' "$server"
-   grep -F 'BACKOFF_RESET_AFTER_MS = 10000' "$server"
-   grep -F 'STATE_REPOLL_MS = 3000' "$server"
-   grep -F 'LAST_SEEN_CAP = 2000' "$server"
-   grep -F 'last_seen.json' "$server"
-   grep -F 'connected' "$server"
-   grep -F 'chmod' "$server"
-   grep -F '0o600' "$server"
+   runtime="<HOME>/runtime/plow-channel-server"
+   grep -R 'CONNECT_TIMEOUT_MS = 30000' "$runtime"
+   grep -R 'IDLE_TIMEOUT_MS = 90000' "$runtime"
+   grep -R 'INITIAL_BACKOFF_MS = 1000' "$runtime"
+   grep -R 'MAX_BACKOFF_MS = 30000' "$runtime"
+   grep -R 'BACKOFF_RESET_AFTER_MS = 10000' "$runtime"
+   grep -R 'STATE_REPOLL_MS = 3000' "$runtime"
+   grep -R 'LAST_SEEN_CAP = 2000' "$runtime"
+   grep -R 'last_seen.json' "$runtime"
+   grep -R 'connected' "$runtime"
+   grep -R 'chmod' "$runtime"
+   grep -R '0o600' "$runtime"
    ```
 
 6. With absent state and then malformed state, the generated server MUST start,
@@ -268,8 +279,9 @@ Dev rehearsal runs against the local Plow and DTU named in
     inbound data. Delivered channel notification meta MUST strip those
     characters or default `user` to `You`.
 
-12. The generated `review-checklist.md` MUST name any invariant not directly
-    observable through local Plow and record its evidence. At minimum it MUST
+12. A named review checklist MUST name any invariant not directly observable
+    through local Plow and record its evidence. Its path is the generating
+    agent's choice and MUST be recorded in the rehearsal log. At minimum it MUST
     include watchdog pins, backoff pins, token-redaction logging, and the
     `connected`-is-liveness / activation-ignores-connected cross-note.
 

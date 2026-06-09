@@ -75,6 +75,11 @@ Converted composed slices are installed before the remaining monolith actions:
   generated Plow activation helpers under
   `$DOMO_HOME/runtime/plow-activation`, the solo/group election, the local Plow
   channel state, and server-side chat teardown.
+- **Plow channel server sub-SEED** - `seeds/plow-channel-server/SEED.md`. It
+  owns the generated MCP channel server under
+  `$DOMO_HOME/runtime/plow-channel-server`, the `claude/channel` capability,
+  the `reply` tool, inbound notification delivery, WebSocket liveness,
+  backfill/dedup state, and token-redaction discipline for its surface.
 - **Domo runtime sub-SEED** - `seeds/domo-runtime/SEED.md`. It owns the
   generated runtime helpers under `$DOMO_HOME/runtime/domo-runtime`, the
   generated operator CLI at `$DOMO_HOME/bin/domo`, workspace authoring,
@@ -87,9 +92,11 @@ Converted composed slices are installed before the remaining monolith actions:
 - **The Domo workspace** - `$DOMO_HOME/workspace`, authored by the generated
   runtime with a lean default `CLAUDE.md` for a solo or group household texting
   assistant with Calendar access.
-- **The Plow Chat channel** - `ref/channels/plow-chat`, an MCP stdio server with
-  the `claude/channel` capability. It reads `PLOW_CHAT_STATE`; it MUST NOT
-  hardcode secrets and MUST NOT log the Bearer token.
+- **The Plow Chat channel** - `$DOMO_HOME/runtime/plow-channel-server`, a
+  generated MCP stdio channel server with the `claude/channel` capability and
+  `reply` tool. It reads the baked state path
+  `$DOMO_HOME/.claude/plow-chat/state.json`; it MUST NOT hardcode secrets, use
+  runtime state-path environment seams, or log the Bearer token.
 - **The install dashboard** - `ref/installer/`, a display-only local monitor
   served from `127.0.0.1`. The dashboard is a soft gate and a user-facing status
   surface only: it has no forms, accepts no install input from the user, and MUST
@@ -103,10 +110,10 @@ Converted composed slices are installed before the remaining monolith actions:
 ### Domo is installed
 
 This action installs the Domo slice. The installing agent MUST first install the
-converted `claude-instance`, `calendar-connector`, `plow-activation`, and
-`domo-runtime` sub-SEED dependencies, then run the generated helpers below in
-order against `DOMO_HOME=$HOME/.domo`. The agent MUST NOT reimplement sub-SEED
-internals.
+converted `claude-instance`, `calendar-connector`, `plow-activation`,
+`plow-channel-server`, and `domo-runtime` sub-SEED dependencies, then run the
+generated helpers below in order against `DOMO_HOME=$HOME/.domo`. The agent
+MUST NOT reimplement sub-SEED internals.
 
 Before starting, the agent sets the fixed install home and shows it:
 
@@ -475,7 +482,23 @@ bash ref/verify.sh
    - successful activation writes chmod-600 `{base_url, token, chat_uid}` state;
    - cleanup invokes server-side chat teardown and removes local Plow state.
 
-4. The `domo-runtime` sub-SEED verification confirms runtime readiness:
+4. The `plow-channel-server` sub-SEED verification confirms channel behavior:
+
+   - generated channel interface exists under
+     `$DOMO_HOME/runtime/plow-channel-server`;
+   - generated `.mcp.json` registers `plow-chat` from that generated channel
+     directory;
+   - it advertises `claude/channel` and the `reply` tool;
+   - WebSocket connection writes the non-secret connected marker;
+   - `reply` lands through the real Plow message path;
+   - restart backfill does not replay historical inbound messages;
+   - repeated inbound messages are de-duplicated with chmod-600
+     `last_seen.json`;
+   - malformed or absent state never crashes the MCP transport;
+   - display names are sanitized before channel delivery;
+   - no Bearer token appears in logs, argv, committed files, or rehearsal logs.
+
+5. The `domo-runtime` sub-SEED verification confirms runtime readiness:
 
    - generated runtime helpers exist under `$DOMO_HOME/runtime/domo-runtime`;
    - generated `$DOMO_HOME/bin/domo` contains baked absolute paths only and does
