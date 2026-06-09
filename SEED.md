@@ -12,11 +12,12 @@ declaration and MUST NOT re-declare it.
 ## Dependencies
 
 `seed-domo` stands up one live, text-reachable Domo on the user's Mac. The
-install action is agent-driven: an installing agent reads this `SEED.md` and runs
-the verified piece scripts in `ref/` against the dedicated persistent
-`DOMO_HOME=$HOME/.domo`. In the current monolith, `DOMO_HOME` is the install-time
-home substitution input; conversion chunks replace it with baked absolute paths
-inside generated runtime artifacts.
+install action is agent-driven: an installing agent reads this `SEED.md`, walks
+converted sub-SEED dependencies first, and runs the remaining verified monolith
+pieces in `ref/` against the dedicated persistent `DOMO_HOME=$HOME/.domo`. In
+the current partial conversion, `DOMO_HOME` is still the install-time home
+substitution input for unconverted monolith pieces; converted sub-SEEDs bake the
+resolved absolute path inside generated runtime artifacts.
 
 Hard dependencies:
 
@@ -40,6 +41,10 @@ Hard dependencies:
 The agent MUST surface missing hard dependencies early and stop on the first
 missing dependency it cannot resolve.
 
+Converted composed slices are installed before the remaining monolith actions:
+
+1. [Purpose](seeds/claude-instance/SEED.md#purpose)
+
 ## Objects
 
 - **The installing agent** - the agent executing this SEED install action. It
@@ -56,8 +61,10 @@ missing dependency it cannot resolve.
   config is `$DOMO_HOME/.claude`. This is the current representation of the
   resolved home; generated runtime artifacts in later conversion chunks MUST
   bake the resolved absolute path instead of reading `DOMO_HOME` at runtime.
-- **Login piece** - `ref/domo-login-piece.sh`. It owns isolated Claude
-  subscription login detection.
+- **Claude instance sub-SEED** - `seeds/claude-instance/SEED.md`. It owns
+  isolated Claude subscription login, the generated login/auth-status/logout
+  helpers under `$DOMO_HOME/runtime/claude-instance`, metered-key-unset launch
+  discipline, and seeded first-run prompt immunity under `$DOMO_HOME/.claude`.
 - **Calendar piece** - `ref/domo-calendar-piece.sh`. It owns the Google Calendar
   connector probe.
 - **Activation piece** - `ref/domo-activate-piece.sh`. It owns solo and group
@@ -85,9 +92,10 @@ missing dependency it cannot resolve.
 
 ### Domo is installed
 
-This action installs the Domo slice. The installing agent MUST run the four
-verified pieces below in order against `DOMO_HOME=$HOME/.domo`. The agent MUST
-NOT reimplement piece internals.
+This action installs the Domo slice. The installing agent MUST first install the
+converted `claude-instance` sub-SEED dependency, then run the three remaining
+verified monolith pieces below in order against `DOMO_HOME=$HOME/.domo`. The
+agent MUST NOT reimplement piece internals.
 
 Before starting, the agent sets the fixed install home and shows it:
 
@@ -139,34 +147,46 @@ update it MUST NOT block the four verified pieces.
 
 **Step 1 - Login.**
 
+Login is owned by the `claude-instance` sub-SEED installed before this root
+action. The installing agent MUST NOT run `ref/domo-login-piece.sh` as the root
+login step. Instead, it uses the generated login and auth-status helpers from:
+
+```text
+$DOMO_HOME/runtime/claude-instance
+```
+
 Who runs what:
 
 - The agent pushes the login step as `waiting`; this is the dashboard's
   "Watching" state. The agent MUST NOT push this state until it is ready to
-  start the blocking wait below:
+  start or verify the sub-SEED login below:
 
   ```bash
-  ref/installer/client.sh installer_step login waiting "Sign in to Claude" terminal "DOMO_HOME=$HOME/.domo ref/domo-login-piece.sh login" || true
+  ref/installer/client.sh installer_step login waiting "Sign in to Claude" terminal "$DOMO_HOME/runtime/claude-instance/login" || true
   ```
 
-- The agent tells the user to run this command in their own terminal:
+- If the sub-SEED auth-status helper does not already confirm subscription
+  auth, the agent tells the user to run the generated login command in their own
+  terminal:
 
   ```bash
-  DOMO_HOME=$HOME/.domo ref/domo-login-piece.sh login
+  $DOMO_HOME/runtime/claude-instance/login
   ```
 
 - The user completes the browser-based Claude subscription login.
-- After relaying the login command, the agent runs the blocking login wait while
-  the dashboard remains in the `waiting` state. The wait polls until the isolated
-  Claude subscription auth is confirmed:
+- After relaying the login command, the agent runs the generated auth-status
+  wait while the dashboard remains in the `waiting` state. The wait polls until
+  the isolated Claude subscription auth is confirmed:
 
   ```bash
-  DOMO_HOME=$HOME/.domo ref/domo-login-piece.sh wait
+  $DOMO_HOME/runtime/claude-instance/auth-status
   ```
 
-Done when the wait command exits 0 after reporting `CONFIRMED`. If it times out
-or exits nonzero, the agent surfaces the failure. The agent MUST NOT ask for,
-print, or copy Claude auth tokens.
+Done when the auth-status helper exits 0 and proves
+`rc==0 && loggedIn==true && authMethod=="claude.ai" &&
+apiProvider=="firstParty"`. If it times out or exits nonzero, the agent
+surfaces the failure. The agent MUST NOT ask for, print, or copy Claude auth
+tokens.
 
 When the blocking wait exits 0:
 
@@ -404,11 +424,15 @@ bash ref/verify.sh
 
 **Piece checks** hold when dependencies are present:
 
-1. Login piece status confirms subscription auth:
+1. The `claude-instance` sub-SEED verification confirms subscription auth:
 
-   ```bash
-   DOMO_HOME=$HOME/.domo ref/domo-login-piece.sh status
-   ```
+   - `claude auth status --json` under `$DOMO_HOME/.claude` returns
+     `rc==0`, `loggedIn==true`, `authMethod=="claude.ai"`, and
+     `apiProvider=="firstParty"`;
+   - generated launch paths unset `ANTHROPIC_API_KEY` and
+     `CLAUDE_CODE_OAUTH_TOKEN`;
+   - `$DOMO_HOME/.claude/.claude.json` and `$DOMO_HOME/.claude/settings.json`
+     are chmod 600 and contain the first-run prompt immunity flags.
 
 2. Calendar piece confirms the connector:
 

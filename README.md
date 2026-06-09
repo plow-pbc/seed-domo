@@ -12,15 +12,16 @@ wired to that session, so you talk to Domo by text. Domo receives a message,
 uses Claude Code and account-level tools such as Google Calendar, then replies
 back into the same texting thread.
 
-Domo is delivered as a **SEED**: a descriptive knowledge base plus a working
-reference implementation that an installing agent uses to stand up a live Domo.
-This slice installs one solo household line. The install is a front-loaded
-action board: the agent does the API calls and verification, while you only
-complete the human-only actions.
+Domo is delivered as a **SEED**: a descriptive knowledge base plus generated
+runtime artifacts that an installing agent uses to stand up a live Domo. This
+slice installs one solo household line. The install is a front-loaded action
+board: the agent does the API calls and verification, while you only complete
+the human-only actions.
 
-`ref/` is the implementation reference: the install dashboard, the `domo` CLI,
-the Plow Chat channel, and the four verified piece scripts that the SEED action
-runs.
+`ref/` currently holds the remaining monolith implementation reference while the
+repo is being converted into sub-SEEDs. Converted slices live under `seeds/` and
+instruct the installing agent to generate their runtime into the baked Domo
+home.
 
 ## Install
 
@@ -47,11 +48,12 @@ outside the checkout:
 export DOMO_HOME="$HOME/.domo"
 ```
 
-Then the installing agent follows `SEED.md` and runs the four verified pieces in
-order:
+Then the installing agent follows `SEED.md`, installs converted sub-SEEDs first,
+and runs the remaining verified pieces in order:
 
-1. **Login.** `ref/domo-login-piece.sh` creates isolated Claude subscription
-   auth under `$DOMO_HOME/.claude`.
+1. **Login.** `seeds/claude-instance/SEED.md` generates isolated Claude
+   subscription auth helpers under `$DOMO_HOME/runtime/claude-instance` and
+   verifies `$DOMO_HOME/.claude`.
 2. **Calendar.** `ref/domo-calendar-piece.sh` verifies the claude.ai Google
    Calendar connector for that same account.
 3. **Activation.** `ref/domo-activate-piece.sh` performs the Plow text
