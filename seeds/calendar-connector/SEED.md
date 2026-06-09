@@ -18,7 +18,7 @@ Hard dependencies:
   at `https://claude.ai/customize/connectors` for the same Anthropic account.
 - **`jq`** - generated verification helpers MUST use it for strict stream-json
   parsing.
-- **`perl`** - generated helpers MAY use it for alarm-based command timeouts.
+- **`perl`** - generated helpers MUST use it for alarm-based command timeouts.
 
 The installing agent MUST resolve the Domo home once before generation,
 defaulting to `$HOME/.domo` for user installs. Auth-dependent rehearsals use the
@@ -83,8 +83,8 @@ NOT copy `ref/domo-calendar-piece.sh` or depend on any committed Calendar script
    - require `is_error != true`;
    - accept a result as substantive only if it has
      `tool_use_result.structuredContent.calendars` as an array, JSON content
-     with a top-level `calendars` array, or non-empty text that does not match
-     the errorish regex below;
+     with a top-level `calendars` array, or text length greater than 2 that
+     does not match the errorish regex below;
    - otherwise print `PENDING` and exit nonzero.
 
    The generated parser MUST include this errorish regex:
@@ -102,9 +102,11 @@ NOT copy `ref/domo-calendar-piece.sh` or depend on any committed Calendar script
      claude auth status --json
    ```
 
-   It MAY proceed only when that JSON satisfies:
+   It MUST proceed only when the auth-status command exits `rc == 0` and that
+   JSON satisfies:
 
    ```text
+   rc == 0
    loggedIn == true
    authMethod == "claude.ai"
    apiProvider == "firstParty"
@@ -163,7 +165,10 @@ Verification runs against the just-generated real instance and generated files.
 3. Metered-key immunity MUST be visible on every generated Claude launch path.
    With `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` set to sentinel values
    in the parent environment, the generated `check` helper MUST still invoke
-   Claude through `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN`.
+   Claude through `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN`. The
+   sentinel fake-Claude binary and its logs MUST be created in a scratch
+   directory outside `<HOME>/runtime/calendar-connector` and
+   `<HOME>/.claude/run/calendar-connector`, then removed after the drill.
 
 4. The generated `check` helper MUST run against the real Google Calendar
    connector on the isolated Claude account and report `CONNECTED` only when
@@ -199,4 +204,15 @@ Verification runs against the just-generated real instance and generated files.
    ```bash
    grep -F 'POLL_INTERVAL_SECONDS=5' "<HOME>/runtime/calendar-connector/wait"
    grep -F 'WAIT_TIMEOUT_SECONDS=600' "<HOME>/runtime/calendar-connector/wait"
+   ```
+
+9. The generated `check` helper MUST contain the pinned probe controls and exact
+   prompt:
+
+   ```bash
+   check="<HOME>/runtime/calendar-connector/check"
+   grep -F 'PROBE_TIMEOUT_SECONDS=90' "$check"
+   grep -F -- '--permission-mode auto' "$check"
+   grep -F -- '--max-budget-usd 0.50' "$check"
+   grep -F 'Call mcp__claude_ai_Google_Calendar__list_calendars now. After the tool result returns, summarize the number of calendars. Do not claim success unless the tool result is available.' "$check"
    ```
