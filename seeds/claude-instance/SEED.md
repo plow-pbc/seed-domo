@@ -27,7 +27,11 @@ generated Claude launch path in this slice.
 
 - **Baked Domo home** - the absolute install home selected before generation.
   The default user-install path is `$HOME/.domo`; auth-dependent rehearsals use
-  their stable baked path. This slice writes only under that home.
+  their stable baked path. This slice writes only under that home. The path MUST
+  be byte-identical across auth-dependent rehearsals because Claude subscription
+  credentials are Keychain-keyed to the exact `CLAUDE_CONFIG_DIR` path; copying
+  `.credentials.json` or other config files to a different path does not carry a
+  usable login.
 - **Isolated Claude config dir** - `<HOME>/.claude`, exported as
   `CLAUDE_CONFIG_DIR` by every generated helper.
 - **Domo workspace path** - `<HOME>/workspace`. The generated config pre-trusts
@@ -39,7 +43,10 @@ generated Claude launch path in this slice.
   generated helpers for `login`, `auth-status`, and `logout`.
 - **Login helper** - a generated executable that runs `claude "/quit"` under the
   isolated config with metered keys unset, then drains delayed terminal input and
-  runs `stty sane` when stdin is a TTY.
+  runs `stty sane` when stdin is a TTY. The helper uses `claude "/quit"`, not
+  `claude auth login`, because the auth subcommand can skip the normal TUI and
+  browser first-run flow; the TUI path is what reliably seeds subscription auth
+  in the isolated config.
 - **Auth-status helper** - a generated executable that runs
   `claude auth status --json` under the isolated config and succeeds only for
   the four-field subscription-auth truth.
@@ -108,8 +115,20 @@ NOT copy `ref/domo-login-piece.sh` or depend on any committed login script.
    and then run `stty sane`.
 
 5. Generate any prompt-confirmation helper needed for the Claude first-run TUI.
-   It MUST answer the fullscreen prompt with option `2`, and press Enter for
-   the development-channels, theme, and trust/default prompts.
+   It MUST match stable label anchors, not brittle full-screen text snapshots,
+   because Claude can fragment prompts across terminal redraws. Required anchors:
+
+   - If the prompt contains `Yes, try it`, send `2` to decline the fullscreen
+     recommendation path.
+   - If the prompt contains a development-channel/default-selection label such
+     as `Yes` plus `development` or `channel`, press Enter.
+   - If the prompt contains a theme/default-selection label such as `Dark`,
+     `Light`, `theme`, or `appearance`, press Enter.
+   - If the prompt contains a trust/default-selection label such as `trust`,
+     `Trust`, `workspace`, `folder`, or `directory`, press Enter.
+
+   The matcher SHOULD tolerate ANSI escapes, line wraps, and fragmented prompt
+   text; it SHOULD strip control sequences before applying these regex anchors.
 
 6. Generate the auth-status helper. It MUST run:
 
@@ -129,6 +148,7 @@ NOT copy `ref/domo-login-piece.sh` or depend on any committed login script.
    ```
 
    It MUST treat missing, non-object, or unparsable JSON as not logged in.
+   Its wait mode MUST poll every 2 seconds and MUST time out after 600 seconds.
 
 7. Generate the logout helper. It MUST use the same isolated environment and
    MUST run `claude auth logout`. The helper is for later reset behavior, not
@@ -136,8 +156,8 @@ NOT copy `ref/domo-login-piece.sh` or depend on any committed login script.
 
 8. Run the login helper if the auth-status helper does not already report the
    four-field subscription-auth truth. Surface the login command to the user and
-   wait until the user completes browser login. Then poll auth-status until it
-   succeeds or the install timeout expires.
+   wait until the user completes browser login. Then poll auth-status every 2
+   seconds until it succeeds or the 600-second install timeout expires.
 
 If this slice's `## Verification` fails because a generated helper or config is
 wrong, the installing agent MUST regenerate this slice exactly once and rerun
