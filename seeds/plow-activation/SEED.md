@@ -11,9 +11,11 @@ Hard dependencies:
 
 - **Plow Chat contract SEED** - the installing agent MUST clone
   `https://github.com/plow-pbc/seed-plow-chat` from `origin/main` before
-  generation and read that SEED's `## Objects` and `## Actions` as the only
-  Plow API surface. This Domo SEED MUST NOT restate Plow endpoints, payload
-  schemas, response schemas, or frame schemas.
+  generation, verify `git rev-parse HEAD` is
+  `b4656d9d2fda82c9525dadc186834003b996055c`, and read that SEED's
+  `## Objects` and `## Actions` as the only Plow API surface. This Domo SEED
+  MUST NOT restate Plow endpoints, payload schemas, response schemas, or frame
+  schemas.
 - **Plow Chat API account** - the user MUST be able to complete the contract's
   activation flow. User installs use the contract's production base URL; dev
   rehearsals bake the local Plow base URL before generation.
@@ -78,9 +80,9 @@ script.
    <HOME>/.claude/plow-chat
    ```
 
-3. Generate `activate`, `status`, and `cleanup` as executable files. They MUST
-   contain the baked absolute `<HOME>` and baked Plow base URL as literals.
-   They MUST NOT read `DOMO_HOME` or `PLOW_CHAT_BASE_URL` at runtime.
+3. Generate `activate`, `status`, and `cleanup` as chmod-700 executable files.
+   They MUST contain the baked absolute `<HOME>` and baked Plow base URL as
+   literals. They MUST NOT read `DOMO_HOME` or `PLOW_CHAT_BASE_URL` at runtime.
 4. Generated helpers that send Bearer-authenticated Plow requests MUST pass the
    token through a chmod-600 `curl --config` tempfile and request bodies through
    stdin. A token MUST NOT appear in argv, logs, dashboard text, committed
@@ -102,8 +104,8 @@ script.
 ### Domo is activated as a solo chat
 
 The `activate --solo` helper MUST perform the contract's activation-with-first-
-chat flow with Domo's solo toggle enabled. This SEED does not define that API
-shape; it only owns these Domo-side requirements:
+chat flow using `provision_chat` by name as Domo's solo knob. This SEED does
+not define that API shape; it only owns these Domo-side requirements:
 
 1. Surface the exact instruction text `Plow Activate: <display_code>` and the
    contract's send-to number to the installing agent and install dashboard.
@@ -138,23 +140,30 @@ only owns the Domo-side election, resume behavior, and member-verification UX.
    the listener is up.
 6. During activation, ignore `connected` frames. In this slice they are not
    proof of readiness; only participant verification and chat-active evidence
-   advance group activation.
+   advance group activation. MUST NOT unify this rule with the later channel
+   server: the channel server treats the same frame name as liveness, the
+   opposite of activation.
 7. When a participant-verification event arrives, immediately persist that
    participant's verified status. When the chat becomes active, write
    `state.json`, set `activation == "complete"`, and preserve the one-time codes
    already written to `install-state.json`.
 8. Restart MUST resume from `install-state.json` without re-creating the chat or
-   rotating member codes. `--force` MAY intentionally discard prior activation
-   state and start over.
-9. WebSocket listen timeout exits 68.
+   rotating member codes.
+9. Before `--force` or a solo/group mode switch discards or overwrites a valid
+   `state.json`, the helper MUST best-effort invoke the contract's delete-chat
+   behavior for the prior chat and record the outcome in chmod-600
+   `install-state.json`. Failure to delete the prior chat MUST be visible in the
+   recorded outcome, but MUST NOT print the token.
+10. WebSocket listen timeout exits 68.
 
 ### Plow chat is cleaned up
 
 The `cleanup` helper is the Domo-owned usage point for the contract's delete-
 chat behavior. It MUST read the local state file, invoke the contract's
 server-side chat teardown for that chat, confirm the chat is gone or already
-absent, then remove only local Plow activation state. It MUST NOT reset,
-logout, remove, or overwrite the baked Domo home.
+absent, then remove only local Plow activation state. It MUST redact any copied
+token and delete `member_codes` from `install-state.json` after teardown. It
+MUST NOT reset, logout, remove, or overwrite the baked Domo home.
 
 ## Verification
 
@@ -166,6 +175,9 @@ Verification runs against the just-generated real instance and generated files.
    test -x "<HOME>/runtime/plow-activation/activate"
    test -x "<HOME>/runtime/plow-activation/status"
    test -x "<HOME>/runtime/plow-activation/cleanup"
+   test "$(stat -f '%Lp' "<HOME>/runtime/plow-activation/activate" 2>/dev/null || stat -c '%a' "<HOME>/runtime/plow-activation/activate")" = 700
+   test "$(stat -f '%Lp' "<HOME>/runtime/plow-activation/status" 2>/dev/null || stat -c '%a' "<HOME>/runtime/plow-activation/status")" = 700
+   test "$(stat -f '%Lp' "<HOME>/runtime/plow-activation/cleanup" 2>/dev/null || stat -c '%a' "<HOME>/runtime/plow-activation/cleanup")" = 700
    test -d "<HOME>/.claude/plow-chat"
    ```
 
@@ -184,7 +196,8 @@ Verification runs against the just-generated real instance and generated files.
    `seed-plow-chat` contract during generation, and generated code/prose under
    `<HOME>/runtime/plow-activation` MUST NOT carry a local OpenAPI clone or a
    Domo-authored endpoint inventory. Rehearsal evidence MUST record the fresh
-   contract clone path and `git rev-parse HEAD`.
+   contract clone path and `git rev-parse HEAD`, which MUST be
+   `b4656d9d2fda82c9525dadc186834003b996055c`.
 
 4. Solo activation against the selected Plow base URL MUST show the full
    activation instruction and send-to number, reject a bare code, then succeed
@@ -215,7 +228,14 @@ Verification runs against the just-generated real instance and generated files.
    it without `--force`, and confirm the chat UID plus all `VERIFY-` codes in
    `<HOME>/install-state.json` are unchanged.
 
-8. The generated helpers MUST expose grep-visible gates for every Domo-side
+8. Mode-switch and force cleanup MUST protect against orphaning the prior chat.
+   With a valid active solo `state.json`, run generated `activate --force
+   --group <member-name>...`; before it overwrites local state, it MUST record a
+   prior-chat cleanup outcome in `<HOME>/install-state.json` and the prior
+   server-side chat MUST be gone or already absent. The same negative MUST pass
+   for a valid group `state.json` followed by `activate --force --solo`.
+
+9. The generated helpers MUST expose grep-visible gates for every Domo-side
    pinned string, timeout, and token-hygiene rule:
 
    ```bash
@@ -228,9 +248,10 @@ Verification runs against the just-generated real instance and generated files.
    grep -F 'curl --config' "$act"
    grep -F -- '--data-binary @-' "$act"
    grep -F 'connected' "$act"
+   grep -F 'provision_chat' "$act"
    ```
 
-9. Token hygiene MUST be clean. No Bearer token may appear in argv, generated
+10. Token hygiene MUST be clean. No Bearer token may appear in argv, generated
    logs, committed files, dashboard text, or rehearsal logs. The token value
    from `state.json` MUST NOT be found outside that chmod-600 state file and
    chmod-600 install state:
@@ -243,7 +264,9 @@ Verification runs against the just-generated real instance and generated files.
    ! git grep -F -- "$token"
    ```
 
-10. Cleanup MUST invoke the contract's delete-chat behavior for the stored chat.
+11. Cleanup MUST invoke the contract's delete-chat behavior for the stored chat.
     After generated `cleanup` exits 0, the server-side chat MUST be gone or
-    already absent, and local `state.json` MUST be removed. Rehearsal evidence
-    MUST record the non-secret chat UID and the delete confirmation.
+    already absent, local `state.json` MUST be removed, and
+    `activation_detail.token` plus `activation_detail.member_codes` MUST be
+    absent from `<HOME>/install-state.json`. Rehearsal evidence MUST record the
+    non-secret chat UID and the delete confirmation.

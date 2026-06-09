@@ -45,6 +45,7 @@ Converted composed slices are installed before the remaining monolith actions:
 
 1. [Purpose](seeds/claude-instance/SEED.md#purpose)
 2. [Purpose](seeds/calendar-connector/SEED.md#purpose)
+3. [Purpose](seeds/plow-activation/SEED.md#purpose)
 
 ## Objects
 
@@ -53,8 +54,8 @@ Converted composed slices are installed before the remaining monolith actions:
   `DOMO_HOME=$HOME/.domo` threaded through every step.
 - **The user** - the human installing Domo. The user performs only the human
   auth and texting steps: complete Claude login when asked, connect Google
-  Calendar if needed, choose solo or group mode, and text the Plow activation or
-  member verification messages.
+  Calendar if needed, and text the Plow activation or member verification
+  messages surfaced by the generated activation helper.
 - **`DOMO_HOME`** - the dedicated persistent Domo home for the current monolith:
   `$HOME/.domo`. The agent MUST set and use exactly `DOMO_HOME=$HOME/.domo` for
   every piece command. The agent MUST NOT use the SEED checkout, any path inside
@@ -69,13 +70,16 @@ Converted composed slices are installed before the remaining monolith actions:
 - **Calendar connector sub-SEED** - `seeds/calendar-connector/SEED.md`. It owns
   the generated Calendar connector probe and strict stream-json transcript
   parser under `$DOMO_HOME/runtime/calendar-connector`.
-- **Activation piece** - `ref/domo-activate-piece.sh`. It owns solo and group
-  Plow activation and writes the Plow channel state.
+- **Plow activation sub-SEED** - `seeds/plow-activation/SEED.md`. It owns the
+  generated Plow activation helpers under
+  `$DOMO_HOME/runtime/plow-activation`, the solo/group election, the local Plow
+  channel state, and server-side chat teardown.
 - **Ready piece** - `ref/domo-ready-piece.sh`. It owns default Domo config,
   daemon startup, and the first outbound ready text.
 - **Plow channel state** - `$DOMO_HOME/.claude/plow-chat/state.json`, written by
-  the activation piece with chmod 600 and shape `{base_url, token, chat_uid}`.
-  The token MUST never be printed, logged, committed, or passed in argv.
+  the generated Plow activation helper with chmod 600 and shape
+  `{base_url, token, chat_uid}`. The token MUST never be printed, logged,
+  committed, or passed in argv.
 - **The Domo workspace** - `$DOMO_HOME/workspace`, authored by the ready piece
   with a lean default `CLAUDE.md` for a solo or group household texting
   assistant with Calendar access.
@@ -95,8 +99,8 @@ Converted composed slices are installed before the remaining monolith actions:
 ### Domo is installed
 
 This action installs the Domo slice. The installing agent MUST first install the
-converted `claude-instance` and `calendar-connector` sub-SEED dependencies, then
-run the remaining verified monolith pieces below in order against
+converted `claude-instance`, `calendar-connector`, and `plow-activation`
+sub-SEED dependencies, then run the remaining verified monolith pieces below in order against
 `DOMO_HOME=$HOME/.domo`. The agent MUST NOT reimplement piece internals.
 
 Before starting, the agent sets the fixed install home and shows it:
@@ -245,48 +249,59 @@ ref/installer/client.sh installer_step activate active "Preparing text activatio
 
 **Step 3 - Plow activation.**
 
-Before running the activation piece, the agent asks the user whether this Domo is
-for a solo chat or a group chat. Solo is the default. For group mode, the agent
-also asks for the household member display names and MUST include the installer
-as one member. The agent passes the mode to the activation piece; it MUST NOT
-edit Plow state by hand.
+Plow activation is owned by the `plow-activation` sub-SEED installed before this
+root action. The installing agent MUST NOT run `ref/domo-activate-piece.sh` as
+the root activation step. Instead, it uses the generated helpers from:
+
+```text
+$DOMO_HOME/runtime/plow-activation
+```
+
+Solo/group election and any household member-name collection are owned by that
+sub-SEED and its generated helper. The root action MUST NOT duplicate the
+election logic or edit Plow state by hand.
 
 Who runs what:
 
-- For solo, the agent starts real activation:
+- The agent runs the generated activation helper according to the
+  `plow-activation` sub-SEED's election result. For solo, the generated command
+  is:
 
   ```bash
-  DOMO_HOME=$HOME/.domo ref/domo-activate-piece.sh activate
+  $DOMO_HOME/runtime/plow-activation/activate --solo
   ```
 
-- For group, the agent starts real activation with one or more member names:
+- For group, the generated command includes one or more member display names as
+  defined by the sub-SEED election:
 
   ```bash
-  DOMO_HOME=$HOME/.domo ref/domo-activate-piece.sh activate --group "You" "Pat"
+  $DOMO_HOME/runtime/plow-activation/activate --group "You" "Pat"
   ```
 
-- The activation piece prints the full activation message and target number.
+- The generated activation helper prints the full activation message and target
+  number.
 - For solo, the agent relays them to the user in chat in this form:
 
   ```text
   Text "Plow Activate: CODE" to NUMBER from the phone Domo should use.
   ```
 
-- For group, the installer first texts the owner activation message. The piece
-  then creates the group chat, prints one `VERIFY-XXXXXX` code per member, and
-  the agent relays each member's own code and target number. Each member sends
-  exactly their own verification code from their own phone.
-- The activation piece continues polling Plow until redeem returns verified and
-  then, for group mode, listens on Plow WSS until all members verify and
-  `chat_active` arrives. It writes:
+- For group, the installer first texts the owner activation message. The
+  generated helper then creates the group chat, prints one `VERIFY-XXXXXX` code
+  per member after its WebSocket listener is up, and the agent relays each
+  member's own code and target number. Each member sends exactly their own
+  verification code from their own phone.
+- The generated activation helper continues polling Plow until redeem returns
+  verified and then, for group mode, listens until all members verify and the
+  chat becomes active. It writes:
 
   ```text
   $DOMO_HOME/.claude/plow-chat/state.json
   ```
 
-Done when the activation piece reports `VERIFIED` for solo or `VERIFIED_GROUP`
-for group and the state file is present, chmod 600, and strictly shaped as
-`{base_url, token, chat_uid}`. The agent MUST never print the token.
+Done when the generated activation helper exits 0 and the state file is
+present, chmod 600, and strictly shaped as `{base_url, token, chat_uid}`. The
+agent MUST never print the token.
 
 Dashboard updates:
 
@@ -296,19 +311,20 @@ While requesting activation:
 ref/installer/client.sh installer_step activate active "Preparing text activation" || true
 ```
 
-After the activation piece receives `MESSAGE` and `NUMBER` from Plow, it prints
-them in terminal and best-effort pushes the same public copy-paste data to the
-dashboard. `MESSAGE` is the full exact text to send, not the bare display code:
+After the generated activation helper receives `MESSAGE` and `NUMBER` from
+Plow, it prints them in terminal and best-effort pushes the same public
+copy-paste data to the dashboard. `MESSAGE` is the full exact text to send, not
+the bare display code:
 
 ```bash
 ref/installer/client.sh installer_step activate waiting "Text the activation message" || true
 ref/installer/client.sh installer_verify "You" pending "MESSAGE" "NUMBER" self || true
 ```
 
-For group mode, the activation piece also best-effort pushes one verification
+For group mode, the generated helper also best-effort pushes one verification
 row per member with that member's display name, `VERIFY-XXXXXX` code, and target
-number. Each row flips to verified as the WSS `participant_verified` frame
-arrives; the activation step becomes ok when `chat_active` arrives.
+number. Each row flips to verified as participant verification is observed; the
+activation step becomes ok when the chat becomes active.
 
 The dashboard MUST NOT receive activation secrets or the Plow Bearer token. It
 MAY receive only the public one-time activation message and target number that
@@ -357,42 +373,22 @@ ref/installer/client.sh installer_done "Domo is live - check your phone for the 
 
 ### Domo is activated
 
-Solo and group activation are owned by:
+Solo and group activation are owned by the `plow-activation` sub-SEED and its
+generated helpers:
 
-```bash
-DOMO_HOME=$HOME/.domo ref/domo-activate-piece.sh activate
+```text
+$DOMO_HOME/runtime/plow-activation/activate
 ```
 
-Solo performs:
-
-1. `POST /v1/auth/activate` with `{"name":"Domo","provision_chat":true}`.
-2. User texts the displayed full message (`Plow Activate: <display_code>`) to the
-   displayed number.
-3. Poll `POST /v1/auth/activate/redeem` until `status=verified`.
-4. Write chmod-600 `{base_url, token, chat_uid}` state.
-
-Group is invoked with:
-
-```bash
-DOMO_HOME=$HOME/.domo ref/domo-activate-piece.sh activate --group "You" "Pat"
-```
-
-It performs:
-
-1. `POST /v1/auth/activate` without `provision_chat`.
-2. Installer texts the displayed full owner activation message.
-3. Poll `POST /v1/auth/activate/redeem` until `status=verified`.
-4. `GET /v1/lines`.
-5. `POST /v1/chats` with one agent participant and one member participant per
-   supplied display name.
-6. Persist each one-time member `verification_code` immediately in chmod-600
-   `install-state.json` activation detail and surface it to that member.
-7. Listen on Plow WSS for `participant_verified` frames and `chat_active`.
-8. Write chmod-600 `{base_url, token, chat_uid}` state.
+The generated activation helper performs the contract-defined Plow calls by
+reading `seed-plow-chat`. This root SEED carries only the root-level delegation:
+run the generated helper, relay the public text instructions, verify the local
+state file, and never print the token.
 
 Activation secrets MUST pass through stdin or chmod-600 files, never command
 arguments. Bearer tokens MUST be written chmod 600, never logged, never printed,
-and never committed.
+and never committed. Server-side chat teardown is also delegated to the
+generated `cleanup` helper from this sub-SEED.
 
 ### Domo runs
 
@@ -456,14 +452,22 @@ bash ref/verify.sh
      Google Calendar connector;
    - the generated text-only transcript fixture parses as `PENDING`.
 
-3. Activation and ready evidence is collected from a real install run: activation
-   must show the full `Plow Activate: <code>` message and send-to number, a bare
-   code must not verify, successful activation must write chmod-600
-   `{base_url, token, chat_uid}` state, the channel server must connect and
-   advertise `claude/channel` plus the `reply` tool, and the first ready text
-   must land through the real Plow message path. Development checkouts MAY keep
-   a private rehearsal overlay under ignored `docs/testing/`; that overlay is
-   not part of the shipped SEED contract.
+3. The `plow-activation` sub-SEED verification confirms activation:
+
+   - generated runtime helpers exist under
+     `$DOMO_HOME/runtime/plow-activation`;
+   - solo activation shows the full `Plow Activate: <code>` message and send-to
+     number, and a bare code does not verify;
+   - group activation verifies owner and members, reveals member codes only
+     after the listener is up, and restart resumes without rotating codes;
+   - successful activation writes chmod-600 `{base_url, token, chat_uid}` state;
+   - cleanup invokes server-side chat teardown and removes local Plow state.
+
+4. Ready evidence is collected from a real install run: the channel server must
+   connect and advertise `claude/channel` plus the `reply` tool, and the first
+   ready text must land through the real Plow message path. Development
+   checkouts MAY keep a private rehearsal overlay under ignored `docs/testing/`;
+   that overlay is not part of the shipped SEED contract.
 
 **Runtime checks** hold only after the install action completes:
 
