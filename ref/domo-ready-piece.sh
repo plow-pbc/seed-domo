@@ -34,6 +34,7 @@ PLOW_CHANNEL_DIR="$SCRIPT_DIR/channels/plow-chat"
 SPAWN_CONFIRM="$SCRIPT_DIR/bin/spawn-confirm.expect"
 ACTIVATE_PIECE="$SCRIPT_DIR/domo-activate-piece.sh"
 PLOW_STUB="$SCRIPT_DIR/installer/plow-stub.ts"
+MCP_LOG_ROOT="${DOMO_MCP_LOG_ROOT:-$HOME/Library/Caches/claude-cli-nodejs}"
 READY_TEXT="${DOMO_READY_TEXT:-Domo is ready. Text me here when you need help with the household or calendar.}"
 READY_TIMEOUT_SECONDS="${DOMO_READY_TIMEOUT_SECONDS:-60}"
 PERMISSION_MODE="${DOMO_PERMISSION_MODE:-auto}"
@@ -84,6 +85,7 @@ set_domo_home() {
   PID_FILE="$RUN_DIR/domo-ready.pid"
   SIG_FILE="$RUN_DIR/domo-ready.sig"
   TMUX_SESSION_FILE="$RUN_DIR/domo-ready.tmux"
+  MCP_LOG_ROOT="${DOMO_MCP_LOG_ROOT:-$HOME/Library/Caches/claude-cli-nodejs}"
 }
 
 file_mode() {
@@ -103,16 +105,21 @@ ensure_workspace_trusted() {
   require_tool jq
   mkdir -p "$CONFIG_DIR"
 
-  local config_file="$CONFIG_DIR/.claude.json" tmp
+  local config_file="$CONFIG_DIR/.claude.json" settings_file="$CONFIG_DIR/settings.json" tmp
   tmp="$(umask 077; mktemp "$CONFIG_DIR/.claude.json.XXXXXX")"
   if [[ -f "$config_file" ]]; then
     jq --arg workspace "$WORKSPACE" '
-      .projects = (.projects // {})
+      .hasCompletedOnboarding = true
+      | ((.fullscreenUpsellSeenCount // 0 | tonumber? // 0) as $seen
+        | .fullscreenUpsellSeenCount = (if $seen < 3 then 3 else $seen end))
+      | .projects = (.projects // {})
       | .projects[$workspace] = ((.projects[$workspace] // {}) + {hasTrustDialogAccepted: true})
     ' "$config_file" > "$tmp"
   else
     jq -n --arg workspace "$WORKSPACE" '
       {
+        hasCompletedOnboarding: true,
+        fullscreenUpsellSeenCount: 3,
         projects: {
           ($workspace): {
             hasTrustDialogAccepted: true
@@ -123,7 +130,81 @@ ensure_workspace_trusted() {
   fi
   chmod 600 "$tmp"
   mv -f "$tmp" "$config_file"
-  log "Trusted workspace for daemon launch: $WORKSPACE"
+
+  tmp="$(umask 077; mktemp "$CONFIG_DIR/.settings.json.XXXXXX")"
+  if [[ -f "$settings_file" ]]; then
+    jq '.theme = (.theme // "dark") | .tui = "default"' "$settings_file" > "$tmp"
+  else
+    jq -n '{theme:"dark", tui:"default"}' > "$tmp"
+  fi
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$settings_file"
+
+  log "Seeded daemon Claude onboarding/rendering preferences for: $WORKSPACE"
+}
+
+mcp_log_dir() {
+  printf '%s/%s/mcp-logs-plow-chat' "$MCP_LOG_ROOT" "$(workspace_slug)"
+}
+
+file_size() {
+  stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1" 2>/dev/null || printf '0'
+}
+
+snapshot_mcp_logs() {
+  local snapshot="$1" dir f size
+  dir="$(mcp_log_dir)"
+  : > "$snapshot"
+  [[ -d "$dir" ]] || return 0
+  while IFS= read -r f; do
+    size="$(file_size "$f")"
+    printf '%s\t%s\n' "$f" "$size" >> "$snapshot"
+  done < <(find "$dir" -type f -name '*.jsonl' 2>/dev/null | sort)
+}
+
+snapshot_size_for() {
+  local snapshot="$1" file="$2"
+  awk -F '\t' -v f="$file" '$1 == f { found = $2 } END { if (found == "") print 0; else print found }' "$snapshot" 2>/dev/null
+}
+
+scan_mcp_log_delta() {
+  local snapshot="$1" dir f old size start
+  dir="$(mcp_log_dir)"
+  [[ -d "$dir" ]] || return 0
+  while IFS= read -r f; do
+    old="$(snapshot_size_for "$snapshot" "$f")"
+    size="$(file_size "$f")"
+    if [[ "$size" -gt "$old" ]]; then
+      start=$((old + 1))
+      tail -c +"$start" "$f" 2>/dev/null || true
+    fi
+  done < <(find "$dir" -type f -name '*.jsonl' 2>/dev/null | sort)
+}
+
+wait_for_host_channel_registered() {
+  local sid="$1" snapshot="$2" timeout="$3" deadline delta sid_pat registered_pat skipped_pat
+  deadline=$(( $(date +%s) + timeout ))
+  sid_pat="\"sessionId\":\"$sid\""
+  registered_pat='Channel notifications registered'
+  skipped_pat='Channel notifications skipped'
+  while [[ "$(date +%s)" -lt "$deadline" ]]; do
+    delta="$(scan_mcp_log_delta "$snapshot")"
+    if printf '%s\n' "$delta" | grep -F "$sid_pat" | grep -F "$registered_pat" >/dev/null 2>&1; then
+      log "Persistent host registered plow-chat channel notifications for session $sid."
+      return 0
+    fi
+    if printf '%s\n' "$delta" | grep -F "$sid_pat" | grep -F "$skipped_pat" >/dev/null 2>&1; then
+      err "persistent host skipped plow-chat channel notifications for session $sid"
+      printf '%s\n' "$delta" | grep -F "$sid_pat" | tail -5 | sed 's/^/[domo-ready] mcp-log: /' >&2 || true
+      return 1
+    fi
+    sleep 0.2
+  done
+  err "timed out waiting for persistent host MCP log to prove 'Channel notifications registered' for session $sid"
+  log "MCP log dir checked: $(mcp_log_dir)"
+  delta="$(scan_mcp_log_delta "$snapshot")"
+  printf '%s\n' "$delta" | grep -F 'Channel notifications' | tail -8 | sed 's/^/[domo-ready] mcp-log: /' >&2 || true
+  return 1
 }
 
 auth_env() {
@@ -462,9 +543,12 @@ cmd_start() {
   fi
 
   mkdir -p "$RUN_DIR" "$WORKSPACE"
-  local sid prompt
+  local sid prompt mcp_snapshot
   sid="$(ensure_session_id)"
   prompt="$(default_system_prompt)"
+  mcp_snapshot="$(umask 077; mktemp "$RUN_DIR/.mcp-log-snapshot.XXXXXX")"
+  TMP_FILES+=("$mcp_snapshot")
+  snapshot_mcp_logs "$mcp_snapshot"
 
   export PLOW_CHAT_STATE="$PLOW_STATE_FILE"
   export PLOW_CHAT_CONNECTED_MARKER="$PLOW_CONNECTED_MARKER"
@@ -525,8 +609,15 @@ cmd_start() {
   fi
 
   log "Daemon process up (pid $pid)."
-  wait_for_plow_connected_marker "$READY_TIMEOUT_SECONDS" || return 1
+  if ! wait_for_plow_connected_marker "$READY_TIMEOUT_SECONDS"; then
+    cmd_stop
+    return 1
+  fi
   log "Channel connected according to plow-chat marker."
+  if ! wait_for_host_channel_registered "$sid" "$mcp_snapshot" "$READY_TIMEOUT_SECONDS"; then
+    cmd_stop
+    return 1
+  fi
 }
 
 send_ready_via_channel_tool() {
@@ -692,6 +783,106 @@ start_channel_probe_daemon() {
   printf '%s' "$!"
 }
 
+selftest_host_registration_gate() {
+  local root="$1" gate_home sid log_dir snapshot log_file rc
+  gate_home="$root/gate-home"
+  mkdir -p "$gate_home"
+  set_domo_home "$gate_home"
+  MCP_LOG_ROOT="$root/cache"
+  mkdir -p "$RUN_DIR"
+  sid="$(ensure_session_id)"
+  ensure_workspace_trusted
+
+  jq -e --arg workspace "$WORKSPACE" '
+    .hasCompletedOnboarding == true
+    and .fullscreenUpsellSeenCount >= 3
+    and .projects[$workspace].hasTrustDialogAccepted == true
+  ' "$CONFIG_DIR/.claude.json" >/dev/null || {
+    err "daemon .claude.json preferences were not seeded"
+    jq . "$CONFIG_DIR/.claude.json" >&2 || true
+    return 1
+  }
+  jq -e '.tui == "default"' "$CONFIG_DIR/settings.json" >/dev/null || {
+    err "daemon settings.json did not pin tui=default"
+    jq . "$CONFIG_DIR/settings.json" >&2 || true
+    return 1
+  }
+
+  log_dir="$(mcp_log_dir)"
+  mkdir -p "$log_dir"
+  snapshot="$root/mcp-snapshot.tsv"
+
+  snapshot_mcp_logs "$snapshot"
+  log_file="$log_dir/registered.jsonl"
+  printf '{"debug":"Channel notifications registered","sessionId":"%s","cwd":"%s"}\n' "$sid" "$WORKSPACE" > "$log_file"
+  wait_for_host_channel_registered "$sid" "$snapshot" 1 >/dev/null || {
+    err "host registration gate did not accept a fresh registered log line"
+    return 1
+  }
+
+  snapshot_mcp_logs "$snapshot"
+  log_file="$log_dir/skipped.jsonl"
+  printf '{"debug":"Channel notifications skipped: server plow-chat not in --channels list for this session","sessionId":"%s","cwd":"%s"}\n' "$sid" "$WORKSPACE" > "$log_file"
+  set +e
+  wait_for_host_channel_registered "$sid" "$snapshot" 1 >/dev/null 2>"$root/skipped.err"
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || {
+    err "host registration gate accepted a skipped channel log"
+    return 1
+  }
+
+  snapshot_mcp_logs "$snapshot"
+  log_file="$log_dir/other-session.jsonl"
+  printf '{"debug":"Channel notifications registered","sessionId":"other-session","cwd":"%s"}\n' "$WORKSPACE" > "$log_file"
+  set +e
+  wait_for_host_channel_registered "$sid" "$snapshot" 1 >/dev/null 2>"$root/other-session.err"
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || {
+    err "host registration gate accepted another session's registered log"
+    return 1
+  }
+
+  log "PASS persistent-host registration gate accepts only the pinned session's registered MCP log"
+  log "PASS daemon Claude config seeds hasCompletedOnboarding, fullscreenUpsellSeenCount, and tui=default"
+}
+
+selftest_spawn_confirm_renderer_prompt() {
+  command -v expect >/dev/null 2>&1 || {
+    warn "expect missing; skipping spawn-confirm renderer prompt selftest"
+    return 0
+  }
+  local root="$1" fake marker
+  fake="$root/fake-renderer-prompt.sh"
+  marker="$root/renderer-choice"
+  cat > "$fake" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'Try the new fullscreen renderer?\n'
+printf 'Try the new full\033[13Gscreen renderer?\n'
+printf '1. Yes, try it\n'
+printf '2. Not now\n'
+printf 'Enter to confirm · Esc to cancel\n'
+IFS= read -r renderer_choice
+case "$renderer_choice" in
+  2) printf 'not-now\n' > "$MARKER" ;;
+  *) printf 'unexpected renderer choice bytes: ' >&2; printf '%s' "$renderer_choice" | od -An -tx1 >&2; exit 3 ;;
+esac
+printf 'WARNING: Loading development channels\n'
+printf 'Channels: server:plow-chat\n'
+printf 'Enter to confirm · Esc to cancel\n'
+IFS= read -r _dev_choice
+SH
+  chmod 700 "$fake"
+  MARKER="$marker" expect -f "$SPAWN_CONFIRM" bash "$fake" >/dev/null
+  grep -qx 'not-now' "$marker" || {
+    err "spawn-confirm did not choose Not now for fullscreen renderer prompt"
+    return 1
+  }
+  log "PASS spawn-confirm selects explicit option 2 for fragmented fullscreen renderer prompt"
+}
+
 cmd_selftest() {
   require_tool bun
   require_tool curl
@@ -715,6 +906,9 @@ cmd_selftest() {
   calls_file="$root/calls.json"
   send_out="$root/ready-send.json"
   probe_log="$root/channel-probe.log"
+
+  selftest_host_registration_gate "$root"
+  selftest_spawn_confirm_renderer_prompt "$root"
 
   log "Starting Plow stub: $root"
   PLOW_STUB_STATE_DIR="$stub_dir" bun run "$PLOW_STUB" >"$root/stub.out" 2>"$root/stub.err" &

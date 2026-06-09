@@ -13,9 +13,11 @@
 # Usage:  expect spawn-confirm.expect <command> [args...]
 # The whole argv (after this script) is the command to spawn.
 #
-# The confirmation menu renders each word with cursor-positioning escapes, so the
-# words are NOT contiguous in the byte stream. "cancel" (from "Esc to cancel", the
-# last line) IS contiguous, so we anchor on it; a timeout fallback sends Enter anyway.
+# The confirmation menus render some prompt words with cursor-positioning escapes,
+# so the prompt text is not always contiguous in the byte stream. Stable option
+# labels are better anchors: dev-channel confirmation defaults safely to option 1,
+# but the fullscreen renderer prompt defaults to "Yes", so select option 2
+# explicitly when that prompt is detected.
 
 set timeout 90
 
@@ -23,16 +25,18 @@ set timeout 90
 # prompt we can answer). -noecho keeps our own argv out of the log.
 eval spawn -noecho $argv
 
-# A genuinely fresh config dir shows first-run onboarding (the theme picker, and
-# possibly a trust prompt) BEFORE the dev-channels confirmation. Dismiss those
-# with Enter (accept the default), then answer the dev-channels confirmation.
+# A genuinely fresh config dir shows first-run onboarding (the theme picker, the
+# fullscreen-renderer upsell, and possibly a trust prompt) around the dev-channels
+# confirmation. Dismiss setup prompts with safe defaults, but choose "Not now" for
+# fullscreen so daemon launches do not switch renderers or wedge on the upsell.
 # NOTE: we cannot cross a /login wall here (there are no credentials to type) — if
 # claude parks at login, `domo start`'s readiness probe surfaces it to the user.
 set tries 0
-while {$tries < 4} {
+while {$tries < 8} {
   incr tries
   expect {
-    -re "text style|Choose the text|Let.s get started|trust the files|trust this folder|project.*trust|Yes, I trust" { send "\r" }
+    "Yes, try it" { send "2\r"; exp_continue }
+    -re "text style|Choose the text|Let.s get started|trust the files|trust this folder|project.*trust|Yes, I trust" { send "\r"; exp_continue }
     "cancel"  { send "\r"; break }
     eof       { exit 0 }
     timeout   { send "\r"; break }
@@ -40,10 +44,16 @@ while {$tries < 4} {
 }
 
 set timeout 8
-expect {
-  "cancel"  { send "\r" }
-  eof       { exit 0 }
-  timeout   { }
+set tries 0
+while {$tries < 4} {
+  incr tries
+  expect {
+    "Yes, try it" { send "2\r"; exp_continue }
+    -re "text style|Choose the text|Let.s get started|trust the files|trust this folder|project.*trust|Yes, I trust" { send "\r"; exp_continue }
+    "cancel"  { send "\r"; exp_continue }
+    eof       { exit 0 }
+    timeout   { break }
+  }
 }
 
 # Steady state: keep the persistent session running until claude exits on its own.

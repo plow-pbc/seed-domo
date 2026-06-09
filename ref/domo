@@ -70,16 +70,19 @@ PLOW_DIR="$CONFIG_DIR/plow-chat"                 # chmod-700 dir holding secrets
 PLOW_STATE_FILE="$PLOW_DIR/state.json"           # redeemed {base_url,token,chat_uid}
 PLOW_ACTIVATION_FILE="$PLOW_DIR/activation.json" # transient pre-token secret
 PLOW_CHANNEL_DIR="$SCRIPT_DIR/channels/plow-chat" # channel server dir (registered as an MCP server)
+PLOW_CONNECTED_MARKER="$PLOW_DIR/connected"
 PLOW_BASE_URL="${PLOW_CHAT_BASE_URL:-https://api.plow.co}"
 SPAWN_CONFIRM="$SCRIPT_DIR/bin/spawn-confirm.expect" # drives the dev-channels confirmation for `start`
 ACTIVATE_PIECE="$SCRIPT_DIR/domo-activate-piece.sh"
 LOGIN_PIECE="$SCRIPT_DIR/domo-login-piece.sh"
 READY_PIECE="$SCRIPT_DIR/domo-ready-piece.sh"
+MCP_LOG_ROOT="${DOMO_MCP_LOG_ROOT:-$HOME/Library/Caches/claude-cli-nodejs}"
 DOMO_INSTALL_TEST_MODE="${DOMO_INSTALL_TEST_MODE:-0}"
 ACTIVATION_TIMEOUT_SECONDS=300
 ACTIVATION_POLL_INTERVAL_SECONDS=3
 ACTIVATION_MAX_RESENDS=0
 WS_TIMEOUT_MS=300000
+START_READY_TIMEOUT_SECONDS="${DOMO_START_READY_TIMEOUT_SECONDS:-60}"
 
 # Permission posture for the persistent session (carried from run.sh).
 PERMISSION_MODE="${DOMO_PERMISSION_MODE:-auto}"
@@ -106,6 +109,10 @@ int_at_least() {
 int_or_default() {
   local raw="$1" default="$2"
   [[ "$raw" =~ ^[0-9]+$ ]] && printf '%s' "$raw" || printf '%s' "$default"
+}
+
+file_size() {
+  stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1" 2>/dev/null || printf '0'
 }
 
 apply_env_policy() {
@@ -141,6 +148,101 @@ strip_ansi() {
 export_config_dir() {
   export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
   log "CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"
+}
+
+seed_daemon_claude_config() {
+  mkdir -p "$CONFIG_DIR"
+  CONFIG_DIR="$CONFIG_DIR" WORKSPACE="$WORKSPACE" bun -e '
+    const fs = require("fs");
+    const path = require("path");
+    const configDir = process.env.CONFIG_DIR;
+    const workspace = process.env.WORKSPACE;
+
+    function readJson(file, fallback) {
+      try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
+    }
+    function writePrivateJson(file, value) {
+      const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
+      fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
+      fs.renameSync(tmp, file);
+      try { fs.chmodSync(file, 0o600); } catch {}
+    }
+
+    const claudeJsonPath = path.join(configDir, ".claude.json");
+    const claudeJson = readJson(claudeJsonPath, {});
+    claudeJson.hasCompletedOnboarding = true;
+    claudeJson.fullscreenUpsellSeenCount = Math.max(Number(claudeJson.fullscreenUpsellSeenCount || 0), 3);
+    claudeJson.projects = claudeJson.projects || {};
+    claudeJson.projects[workspace] = { ...(claudeJson.projects[workspace] || {}), hasTrustDialogAccepted: true };
+    writePrivateJson(claudeJsonPath, claudeJson);
+
+    const settingsPath = path.join(configDir, "settings.json");
+    const settings = readJson(settingsPath, {});
+    settings.theme = settings.theme || "dark";
+    settings.tui = "default";
+    writePrivateJson(settingsPath, settings);
+  '
+  log "Seeded daemon Claude onboarding/rendering preferences for: $WORKSPACE"
+}
+
+mcp_log_dir() {
+  printf '%s/%s/mcp-logs-plow-chat' "$MCP_LOG_ROOT" "$WORKSPACE_SLUG"
+}
+
+snapshot_mcp_logs() {
+  local snapshot="$1" dir f size
+  dir="$(mcp_log_dir)"
+  : > "$snapshot"
+  [[ -d "$dir" ]] || return 0
+  while IFS= read -r f; do
+    size="$(file_size "$f")"
+    printf '%s\t%s\n' "$f" "$size" >> "$snapshot"
+  done < <(find "$dir" -type f -name '*.jsonl' 2>/dev/null | sort)
+}
+
+snapshot_size_for() {
+  local snapshot="$1" file="$2"
+  awk -F '\t' -v f="$file" '$1 == f { found = $2 } END { if (found == "") print 0; else print found }' "$snapshot" 2>/dev/null
+}
+
+scan_mcp_log_delta() {
+  local snapshot="$1" dir f old size start
+  dir="$(mcp_log_dir)"
+  [[ -d "$dir" ]] || return 0
+  while IFS= read -r f; do
+    old="$(snapshot_size_for "$snapshot" "$f")"
+    size="$(file_size "$f")"
+    if [[ "$size" -gt "$old" ]]; then
+      start=$((old + 1))
+      tail -c +"$start" "$f" 2>/dev/null || true
+    fi
+  done < <(find "$dir" -type f -name '*.jsonl' 2>/dev/null | sort)
+}
+
+wait_for_host_channel_registered() {
+  local sid="$1" snapshot="$2" timeout="$3" deadline delta sid_pat registered_pat skipped_pat
+  deadline=$(( $(date +%s) + timeout ))
+  sid_pat="\"sessionId\":\"$sid\""
+  registered_pat='Channel notifications registered'
+  skipped_pat='Channel notifications skipped'
+  while [[ "$(date +%s)" -lt "$deadline" ]]; do
+    delta="$(scan_mcp_log_delta "$snapshot")"
+    if printf '%s\n' "$delta" | grep -F "$sid_pat" | grep -F "$registered_pat" >/dev/null 2>&1; then
+      log "Persistent host registered plow-chat channel notifications for session $sid."
+      return 0
+    fi
+    if printf '%s\n' "$delta" | grep -F "$sid_pat" | grep -F "$skipped_pat" >/dev/null 2>&1; then
+      warn "persistent host skipped plow-chat channel notifications for session $sid"
+      printf '%s\n' "$delta" | grep -F "$sid_pat" | tail -5 | sed 's/^/[domo] mcp-log: /' >&2 || true
+      return 1
+    fi
+    sleep 0.2
+  done
+  warn "timed out waiting for persistent host MCP log to prove 'Channel notifications registered' for session $sid"
+  log "MCP log dir checked: $(mcp_log_dir)"
+  delta="$(scan_mcp_log_delta "$snapshot")"
+  printf '%s\n' "$delta" | grep -F 'Channel notifications' | tail -8 | sed 's/^/[domo] mcp-log: /' >&2 || true
+  return 1
 }
 
 # _dash <verb> [args…] — push to the install dashboard IF one is running. Best
@@ -309,6 +411,7 @@ prepare_channel_env() {
       CHANNELS_FLAG="server:plow-chat"
       # The server reads its secrets from this absolute path.
       export PLOW_CHAT_STATE="$PLOW_STATE_FILE"
+      export PLOW_CHAT_CONNECTED_MARKER="$PLOW_CONNECTED_MARKER"
       CHANNEL_ARGS=(--dangerously-load-development-channels "$CHANNELS_FLAG")
       log "Channel: plow-chat (dev channel server:plow-chat); PLOW_CHAT_STATE=$PLOW_CHAT_STATE"
       [[ -f "$PLOW_STATE_FILE" ]] || warn "plow-chat state.json missing — run './domo activate' (the channel loads but reply errors until then)."
@@ -357,6 +460,7 @@ cmd_setup() {
   case "$DOMO_CHANNEL" in
     plow-chat)
       require_bun
+      seed_daemon_claude_config
       local missing=0
       for f in "$PLOW_CHANNEL_DIR/.claude-plugin/plugin.json" "$PLOW_CHANNEL_DIR/.mcp.json" "$PLOW_CHANNEL_DIR/server.ts"; do
         if [[ -f "$f" ]]; then log "OK   channel file present: $f"; else warn "MISS channel file absent: $f"; missing=1; fi
@@ -1377,6 +1481,7 @@ cmd_start() {
   require_claude
   [[ "$DOMO_CHANNEL" == "plow-chat" ]] && require_bun
   ensure_auth
+  seed_daemon_claude_config
 
   [[ -d "$WORKSPACE" ]] || die "workspace not found at $WORKSPACE. Run './domo setup' first."
 
@@ -1401,6 +1506,9 @@ cmd_start() {
   mkdir -p "$RUN_DIR"
   cd "$WORKSPACE" # cd BEFORE building argv so the workspace project-dir slug is correct
   build_claude_argv
+  local mcp_snapshot
+  mcp_snapshot="$(umask 077; mktemp "$RUN_DIR/.mcp-log-snapshot.XXXXXX")"
+  snapshot_mcp_logs "$mcp_snapshot"
 
   log "Starting BACKGROUND daemon in $WORKSPACE"
   log "Launch: ${CLAUDE_ARGV[*]}"
@@ -1477,15 +1585,20 @@ $(tail -n 20 "$LOG_FILE" 2>/dev/null | strip_ansi || true)"
     kill -0 "$pid" 2>/dev/null || break
     sleep 1
   done
-  if [[ "$ready" -eq 1 ]]; then
-    log "Daemon ready — channel listening. Transcript feed: ./domo logs    Stop with: ./domo stop"
-  else
+  if [[ "$ready" -ne 1 ]]; then
     warn "Daemon pid is alive but NOT ready after ~15s: no session transcript and no channel yet."
-    warn "Most likely '$CONFIG_DIR' hasn't completed first-run onboarding/login, so claude is parked"
-    warn "at the theme picker or the /login wall. Run './domo stop', then './domo login' and complete"
-    warn "the theme picker + '/login' in a real terminal, then './domo start' again."
+    warn "Most likely '$CONFIG_DIR' hasn't completed first-run onboarding/login, so claude is parked."
     warn "('./domo logs --raw' shows where it's parked.)"
   fi
+
+  if ! wait_for_host_channel_registered "$sid" "$mcp_snapshot" "$START_READY_TIMEOUT_SECONDS"; then
+    warn "Stopping half-started daemon because the persistent host did not register plow-chat channel notifications."
+    cmd_stop
+    rm -f "$mcp_snapshot"
+    die "daemon failed readiness: no persistent host 'Channel notifications registered' proof for session $sid"
+  fi
+  rm -f "$mcp_snapshot"
+  log "Daemon ready — persistent host channel registered. Transcript feed: ./domo logs    Stop with: ./domo stop"
 }
 
 # ---------------------------------------------------------------------------
