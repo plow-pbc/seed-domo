@@ -117,9 +117,16 @@ runtime script as the installed operator entrypoint.
 
 3. Generate `author` so it reads `<HOME>/install-state.json`, writes
    `<HOME>/workspace/CLAUDE.md`, ensures `<HOME>/.claude/domo.json`, and writes
-   `<HOME>/.claude/domo-runtime.json`. The solo prompt MUST describe a solo
-   household. The group prompt MUST describe a group household and include the
-   verified member display names from install state.
+   `<HOME>/.claude/domo-runtime.json`. The generated workspace prompt MUST
+   include this exact reply-tool discipline line:
+
+   ```text
+   user-visible responses MUST go through the plow-chat reply tool
+   ```
+
+   The solo prompt MUST describe a solo household. The group prompt MUST
+   describe a group household and include the verified member display names from
+   install state.
 
 4. Generate the pinned-session rule exactly: if the session jsonl exists under
    the workspace projects directory, launch Claude with `--resume <session_id>`;
@@ -144,10 +151,14 @@ runtime script as the installed operator entrypoint.
    `spawn-confirm.expect` wrapper around Claude so the development-channel
    confirmation is answered while the TUI continues to own a persistent PTY. A
    bare backgrounded `expect`, `nohup`, or shell job is not sufficient. The
-   confirmation matcher MUST use the same stable labels as the Claude instance
-   slice: `Yes, try it` sends `2`; text-style/theme/trust/dev-channel labels
-   press Enter. If `tmux` or `expect` is unavailable, generated `doctor` and
-   `start` MUST fail before declaring readiness.
+   confirmation matcher MUST mirror the Claude instance slice's stable anchors:
+   `Yes, try it` sends `2`; the exact default-enter label regex is
+   `text style|Choose the text|Let.s get started|trust the files|trust this folder|project.*trust|Yes, I trust`;
+   the development-channel confirmation MUST be label-anchored to
+   `I am using this for local development` or `Enter to confirm`. It MUST NOT
+   send `2` based on broad renderer words such as `fullscreen` or `Fullscreen`.
+   If `tmux` or `expect` is unavailable, generated `doctor` and `start` MUST
+   fail before declaring readiness.
 
 7. Generate `register-channel` to run, under the isolated Claude config:
 
@@ -348,6 +359,14 @@ Verification runs against the just-generated real instance and generated files.
    grep -F 'tmux display-message' "$start"
    grep -F 'expect' "$start"
    grep -F 'Yes, try it' "$start"
+   prompt="<HOME>/runtime/domo-runtime/spawn-confirm.expect"
+   grep -F 'Yes, try it' "$prompt"
+   grep -F 'send "2\r"' "$prompt"
+   grep -F 'text style|Choose the text|Let.s get started|trust the files|trust this folder|project.*trust|Yes, I trust' "$prompt"
+   grep -F 'I am using this for local development' "$prompt"
+   grep -F 'Enter to confirm' "$prompt"
+   ! grep -F 'fullscreen|Fullscreen' "$prompt"
+   ! grep -F 'Fullscreen|fullscreen' "$prompt"
    grep -F 'START_READY_TIMEOUT_SECONDS=60' "$gate"
    grep -F 'Channel notifications registered' "$gate"
    grep -F 'Channel notifications skipped' "$gate"
@@ -409,10 +428,15 @@ Verification runs against the just-generated real instance and generated files.
 
    ```bash
    grep -F 'solo household' "<HOME>/workspace/CLAUDE.md"
+   grep -F 'user-visible responses MUST go through the plow-chat reply tool' "<HOME>/workspace/CLAUDE.md"
    # in a separate group rehearsal home or after group activation:
    grep -F 'group household' "<HOME>/workspace/CLAUDE.md"
    grep -F '<member-display-name>' "<HOME>/workspace/CLAUDE.md"
    ```
+
+   If Chunk 5 rehearsal does not produce a fresh group-mode activation, record
+   the group authoring branch as owed to the Chunk 6/7 composed rehearsal rather
+   than marking it complete from solo-mode evidence.
 
 11. `status` and `doctor` MUST assert green after readiness without printing
     secrets:
