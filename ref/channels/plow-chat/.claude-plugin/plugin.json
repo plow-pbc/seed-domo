@@ -1,0 +1,14 @@
+{
+  "name": "plow-chat",
+  "description": "Plow Chat channel for Claude Code — bridges a real SMS/texting conversation to a Claude Code session over the Plow Chat WebSocket + REST API. Reads its Bearer token from a chmod-600 state file (path via PLOW_CHAT_STATE).",
+  "version": "0.1.0",
+  "keywords": [
+    "plow-chat",
+    "plow",
+    "sms",
+    "texting",
+    "channel",
+    "mcp",
+    "domo"
+  ]
+}

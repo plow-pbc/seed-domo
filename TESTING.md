@@ -8,20 +8,22 @@ Run the committed structural verifier:
 bash ref/verify.sh
 ```
 
-This is the only automated check shipped in the repo. It verifies the SEED tree
-shape: README purpose heading, root grammar, purpose back-references, and the
-`## Verification` / `## Open Items` heading grammar.
+This checks the SEED tree shape: README purpose heading, root grammar, purpose
+back-references, and the `## Verification` / `## Open Items` heading grammar.
 
-## Install Rehearsal
+## Baseline Install Rehearsal
 
-End-to-end behavior is verified by a private install rehearsal, not committed
-test harnesses. The local overlay is `docs/testing/e2e-rehearsal.md` in working
-checkouts that are doing implementation work. It uses:
+The current monolith remains installable through the product files in `ref/`.
+End-to-end behavior is rehearsed against real local services, not the deleted
+stub harness.
+
+Use the private overlay at `docs/testing/e2e-rehearsal.md` from implementation
+checkouts. It covers:
 
 - local Plow at `http://127.0.0.1:19004`;
 - DTU inbound simulation at `http://127.0.0.1:19005/ui/inbound`;
 - a stable auth'd rehearsal home for real Claude login and real Calendar checks;
-- ephemeral baked homes only for no-auth Plow-side drills.
+- ephemeral homes only for no-auth Plow-side drills.
 
 Published users do not need the rehearsal overlay. For a user install, the SEED
 install itself is the end-to-end verification: Domo logs in with the user's real
