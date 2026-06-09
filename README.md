@@ -12,15 +12,15 @@ wired to that session, so you talk to Domo by text. Domo receives a message,
 uses Claude Code and account-level tools such as Google Calendar, then replies
 back into the same texting thread.
 
-Domo is delivered as a **SEED**: a descriptive knowledge base plus a working
-reference implementation that an installing agent uses to stand up a live Domo.
-This slice installs one solo household line. The install is a front-loaded
-action board: the agent does the API calls and verification, while you only
-complete the human-only actions.
+Domo is delivered as a **SEED**: a descriptive knowledge base that an installing
+agent uses to generate and verify a live Domo. This checkout ships product prose
+and one structural verifier, not a committed runtime. The install is a
+front-loaded action board: the agent generates the runtime into a baked home,
+does the API calls and verification, while you only complete the human-only
+actions.
 
-`ref/` is the implementation reference: the install dashboard, the `domo` CLI,
-the Plow Chat channel, and the four verified piece scripts that the SEED action
-runs.
+`ref/` intentionally contains only `verify.sh`, the structural SEED conformance
+checker.
 
 ## Install
 
@@ -40,24 +40,19 @@ git clone https://github.com/plow-pbc/seed-domo && cd seed-domo
 Then run `/seed-install .`, or open the checkout and ask the agent to install
 this SEED.
 
-The SEED install action is the install path. It pins the persistent Domo home
-outside the checkout:
+The SEED install action is the install path. It resolves the persistent Domo
+home outside the checkout, defaulting to `$HOME/.domo`, and bakes that absolute
+path into all generated files. The generated runtime must not read `DOMO_HOME`.
 
-```bash
-export DOMO_HOME="$HOME/.domo"
-```
+The installing agent follows `SEED.md` and generates the install steps in order:
 
-Then the installing agent follows `SEED.md` and runs the four verified pieces in
-order:
-
-1. **Login.** `ref/domo-login-piece.sh` creates isolated Claude subscription
-   auth under `$DOMO_HOME/.claude`.
-2. **Calendar.** `ref/domo-calendar-piece.sh` verifies the claude.ai Google
-   Calendar connector for that same account.
-3. **Activation.** `ref/domo-activate-piece.sh` performs the Plow text
-   activation and writes chmod-600 channel state.
-4. **Ready.** `ref/domo-ready-piece.sh` authors the workspace, starts the daemon,
-   and sends the first ready text.
+1. **Login.** Create isolated Claude subscription auth under `<HOME>/.claude`.
+2. **Calendar.** Verify the claude.ai Google Calendar connector for that same
+   account.
+3. **Activation.** Perform the Plow text activation and write chmod-600 channel
+   state.
+4. **Ready.** Author the workspace, start the daemon, and send the first ready
+   text.
 
 The only things you do are the interactive subscription login, the browser
 connector toggle, and texting the activation message from the relevant phone.
@@ -66,27 +61,14 @@ printed as secrets.
 
 ## Usage
 
-After install, Domo runs as one pinned, persistent session. The reference CLI is:
-
-```bash
-export DOMO_HOME="$HOME/.domo"
-ref/domo setup       # isolated dirs, workspace, pinned session UUID
-ref/domo activate    # Plow activation; normally run by the installer
-ref/domo login       # interactive Claude subscription login in this instance
-ref/domo start       # launch the background daemon
-ref/domo status      # config + daemon liveness + channel state, no secrets
-ref/domo logs        # readable transcript feed
-ref/domo doctor      # read-only preflight
-ref/domo stop        # stop daemon and scoped channel children
-```
-
-`ref/domo logs` renders inbound texts, replies, and tool activity. Add `--raw`
-for the underlying PTY capture or `--no-follow` for a one-shot read.
+After install, Domo runs as one pinned, persistent session. The generated
+operator CLI lives at `<HOME>/bin/domo` and uses baked absolute paths for verbs
+such as `start`, `stop`, `status`, `logs`, `doctor`, and `reset`.
 
 ## Security Posture
 
-- Domo uses Claude subscription auth. `ANTHROPIC_API_KEY` must stay unset, and
-  `ref/domo` unsets it on launch paths.
+- Domo uses Claude subscription auth. `ANTHROPIC_API_KEY` and
+  `CLAUDE_CODE_OAUTH_TOKEN` must stay unset on generated launch paths.
 - The Plow Bearer token is user-wide. It is stored chmod 600 under the isolated
   `.claude/plow-chat` state dir, gitignored, never logged, never printed, and
   never committed.
