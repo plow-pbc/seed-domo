@@ -17,8 +17,8 @@ The current monolith remains installable through the product files in `ref/`.
 End-to-end behavior is rehearsed against real local services, not the deleted
 stub harness.
 
-Use the private overlay at `docs/testing/e2e-rehearsal.md` from implementation
-checkouts. It covers:
+Implementation checkouts may keep a private, gitignored rehearsal overlay under
+`docs/testing/`. That local overlay should cover:
 
 - local Plow at `http://127.0.0.1:19004`;
 - DTU inbound simulation at `http://127.0.0.1:19005/ui/inbound`;

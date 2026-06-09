@@ -416,9 +416,14 @@ bash ref/verify.sh
    DOMO_HOME=$HOME/.domo ref/domo-calendar-piece.sh check
    ```
 
-3. The baseline install rehearsal in `docs/testing/e2e-rehearsal.md` validates
-   activation, channel connection, and first ready text against the local Plow
-   and DTU. The committed Plow stub and e2e harness are intentionally absent.
+3. Activation and ready evidence is collected from a real install run: activation
+   must show the full `Plow Activate: <code>` message and send-to number, a bare
+   code must not verify, successful activation must write chmod-600
+   `{base_url, token, chat_uid}` state, the channel server must connect and
+   advertise `claude/channel` plus the `reply` tool, and the first ready text
+   must land through the real Plow message path. Development checkouts MAY keep
+   a private rehearsal overlay under ignored `docs/testing/`; that overlay is
+   not part of the shipped SEED contract.
 
 **Runtime checks** hold only after the install action completes:
 

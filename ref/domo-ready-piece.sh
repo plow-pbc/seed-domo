@@ -32,14 +32,11 @@ SIG_FILE="$RUN_DIR/domo-ready.sig"
 TMUX_SESSION_FILE="$RUN_DIR/domo-ready.tmux"
 PLOW_CHANNEL_DIR="$SCRIPT_DIR/channels/plow-chat"
 SPAWN_CONFIRM="$SCRIPT_DIR/bin/spawn-confirm.expect"
-ACTIVATE_PIECE="$SCRIPT_DIR/domo-activate-piece.sh"
-PLOW_STUB="$SCRIPT_DIR/installer/plow-stub.ts"
 MCP_LOG_ROOT="${DOMO_MCP_LOG_ROOT:-$HOME/Library/Caches/claude-cli-nodejs}"
 READY_TEXT="${DOMO_READY_TEXT:-Domo is ready. Text me here when you need help with the household or calendar.}"
 READY_TIMEOUT_SECONDS="${DOMO_READY_TIMEOUT_SECONDS:-60}"
 PERMISSION_MODE="${DOMO_PERMISSION_MODE:-auto}"
 
-PIDS=()
 TMP_FILES=()
 
 log() { printf '[domo-ready] %s\n' "$*"; }
@@ -51,12 +48,6 @@ quote() {
 }
 
 cleanup() {
-  local pid
-  if ((${#PIDS[@]})); then
-    for pid in "${PIDS[@]}"; do
-      kill "$pid" >/dev/null 2>&1 || true
-    done
-  fi
   if ((${#TMP_FILES[@]})); then
     rm -f "${TMP_FILES[@]}" >/dev/null 2>&1 || true
   fi
@@ -621,7 +612,7 @@ cmd_start() {
 }
 
 send_ready_via_channel_tool() {
-  local state_file="$1" ready_text="$2" base_url="${3:-}" chat_uid="${4:-}" out_file="${5:-}"
+  local state_file="$1" ready_text="$2" out_file="${3:-}"
   require_tool bun
   require_tool jq
   [[ -n "$out_file" ]] || out_file="$(mktemp "${TMPDIR:-/tmp}/domo-ready-mcp.XXXXXX")"
@@ -629,8 +620,6 @@ send_ready_via_channel_tool() {
   CHANNEL_DIR="$PLOW_CHANNEL_DIR" \
   PLOW_CHAT_STATE="$state_file" \
   DOMO_READY_TEXT="$ready_text" \
-  PLOW_STUB_BASE_URL="$base_url" \
-  PLOW_STUB_CHAT_UID="$chat_uid" \
   bun -e '
     import { pathToFileURL } from "node:url";
 
@@ -640,32 +629,12 @@ send_ready_via_channel_tool() {
     const { StdioClientTransport } = await import(pathToFileURL(`${sdkBase}/client/stdio.js`).href);
 
     const readyText = process.env.DOMO_READY_TEXT;
-    const baseUrl = process.env.PLOW_STUB_BASE_URL || "";
-    const chatUid = process.env.PLOW_STUB_CHAT_UID || "";
 
     function fail(message) {
       console.error(message);
       process.exit(1);
     }
-    async function sleep(ms) {
-      await new Promise((resolve) => setTimeout(resolve, ms));
-    }
-    async function jsonFetch(url, options = {}) {
-      const res = await fetch(url, options);
-      if (!res.ok) fail(`${options.method || "GET"} ${url} -> HTTP ${res.status}: ${await res.text()}`);
-      return await res.json();
-    }
-    async function waitFor(predicate, label, timeoutMs = 15000) {
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-        const value = await predicate();
-        if (value) return value;
-        await sleep(150);
-      }
-      fail(`timed out waiting for ${label}`);
-    }
 
-    const before = baseUrl ? Number((await jsonFetch(`${baseUrl}/_stub/calls`)).ws_connect || 0) : 0;
     const client = new Client({ name: "domo-ready-host", version: "1.0.0" }, { capabilities: {} });
     const transport = new StdioClientTransport({
       command: "bun",
@@ -684,33 +653,13 @@ send_ready_via_channel_tool() {
 
     try {
       await client.connect(transport);
-      if (baseUrl) {
-        await waitFor(async () => {
-          const calls = await jsonFetch(`${baseUrl}/_stub/calls`);
-          return Number(calls.ws_connect || 0) > before;
-        }, "plow-chat websocket connection");
-      }
 
       const result = await client.callTool({ name: "reply", arguments: { text: readyText } });
       if (result.isError) fail(`reply tool returned error: ${JSON.stringify(result)}`);
 
-      let recorded = false;
-      let calls = {};
-      if (baseUrl && chatUid) {
-        await waitFor(async () => {
-          const body = await jsonFetch(`${baseUrl}/_stub/messages?chat_uid=${encodeURIComponent(chatUid)}`);
-          return (body.data || []).some((m) => m.direction === "outbound" && m.body === readyText);
-        }, "ready outbound message");
-        calls = await jsonFetch(`${baseUrl}/_stub/calls`);
-        recorded = true;
-      }
-
       console.log(JSON.stringify({
         status: "sent",
-        ready_text: readyText,
-        recorded,
-        ws_connect: calls.ws_connect ?? null,
-        outbound_messages: calls.outbound_messages ?? null,
+        ready_text: readyText
       }));
     } finally {
       await client.close().catch(() => {});
@@ -750,278 +699,6 @@ cmd_status() {
   [[ "$ok" -eq 0 ]]
 }
 
-wait_for_file() {
-  local file="$1" timeout="$2"
-  local deadline=$(( $(date +%s) + timeout ))
-  while [[ "$(date +%s)" -lt "$deadline" ]]; do
-    [[ -s "$file" ]] && return 0
-    sleep 0.2
-  done
-  return 1
-}
-
-auto_text_stub_code() {
-  local base_url="$1" activation_file="$2" seen_file="$3"
-  local text
-  while :; do
-    if [[ -f "$activation_file" ]]; then
-      text="$(jq -r '.activation_message // (if (.display_code // "") != "" then "Plow Activate: " + .display_code else "" end)' "$activation_file" 2>/dev/null || true)"
-      if [[ -n "$text" ]] && ! grep -qxF "$text" "$seen_file" 2>/dev/null; then
-        printf '%s\n' "$text" >> "$seen_file"
-        jq -n --arg text "$text" '{text: $text}' \
-          | curl -fsS -X POST "$base_url/_stub/text" -H 'Content-Type: application/json' -d @- >/dev/null
-        return 0
-      fi
-    fi
-    sleep 0.2
-  done
-}
-
-start_channel_probe_daemon() {
-  local state_file="$1" log_file="$2"
-  PLOW_CHAT_STATE="$state_file" bun run --cwd "$PLOW_CHANNEL_DIR" --shell=bun --silent start >"$log_file" 2>&1 &
-  printf '%s' "$!"
-}
-
-selftest_host_registration_gate() {
-  local root="$1" gate_home sid log_dir snapshot log_file rc
-  gate_home="$root/gate-home"
-  mkdir -p "$gate_home"
-  set_domo_home "$gate_home"
-  MCP_LOG_ROOT="$root/cache"
-  mkdir -p "$RUN_DIR"
-  sid="$(ensure_session_id)"
-  ensure_workspace_trusted
-
-  jq -e --arg workspace "$WORKSPACE" '
-    .hasCompletedOnboarding == true
-    and .fullscreenUpsellSeenCount >= 3
-    and .projects[$workspace].hasTrustDialogAccepted == true
-  ' "$CONFIG_DIR/.claude.json" >/dev/null || {
-    err "daemon .claude.json preferences were not seeded"
-    jq . "$CONFIG_DIR/.claude.json" >&2 || true
-    return 1
-  }
-  jq -e '.tui == "default"' "$CONFIG_DIR/settings.json" >/dev/null || {
-    err "daemon settings.json did not pin tui=default"
-    jq . "$CONFIG_DIR/settings.json" >&2 || true
-    return 1
-  }
-
-  log_dir="$(mcp_log_dir)"
-  mkdir -p "$log_dir"
-  snapshot="$root/mcp-snapshot.tsv"
-
-  snapshot_mcp_logs "$snapshot"
-  log_file="$log_dir/registered.jsonl"
-  printf '{"debug":"Channel notifications registered","sessionId":"%s","cwd":"%s"}\n' "$sid" "$WORKSPACE" > "$log_file"
-  wait_for_host_channel_registered "$sid" "$snapshot" 1 >/dev/null || {
-    err "host registration gate did not accept a fresh registered log line"
-    return 1
-  }
-
-  snapshot_mcp_logs "$snapshot"
-  log_file="$log_dir/skipped.jsonl"
-  printf '{"debug":"Channel notifications skipped: server plow-chat not in --channels list for this session","sessionId":"%s","cwd":"%s"}\n' "$sid" "$WORKSPACE" > "$log_file"
-  set +e
-  wait_for_host_channel_registered "$sid" "$snapshot" 1 >/dev/null 2>"$root/skipped.err"
-  rc=$?
-  set -e
-  [[ "$rc" -ne 0 ]] || {
-    err "host registration gate accepted a skipped channel log"
-    return 1
-  }
-
-  snapshot_mcp_logs "$snapshot"
-  log_file="$log_dir/other-session.jsonl"
-  printf '{"debug":"Channel notifications registered","sessionId":"other-session","cwd":"%s"}\n' "$WORKSPACE" > "$log_file"
-  set +e
-  wait_for_host_channel_registered "$sid" "$snapshot" 1 >/dev/null 2>"$root/other-session.err"
-  rc=$?
-  set -e
-  [[ "$rc" -ne 0 ]] || {
-    err "host registration gate accepted another session's registered log"
-    return 1
-  }
-
-  log "PASS persistent-host registration gate accepts only the pinned session's registered MCP log"
-  log "PASS daemon Claude config seeds hasCompletedOnboarding, fullscreenUpsellSeenCount, and tui=default"
-}
-
-selftest_spawn_confirm_renderer_prompt() {
-  command -v expect >/dev/null 2>&1 || {
-    warn "expect missing; skipping spawn-confirm renderer prompt selftest"
-    return 0
-  }
-  local root="$1" fake marker
-  fake="$root/fake-renderer-prompt.sh"
-  marker="$root/renderer-choice"
-  cat > "$fake" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-printf 'Try the new fullscreen renderer?\n'
-printf 'Try the new full\033[13Gscreen renderer?\n'
-printf '1. Yes, try it\n'
-printf '2. Not now\n'
-printf 'Enter to confirm · Esc to cancel\n'
-IFS= read -r renderer_choice
-case "$renderer_choice" in
-  2) printf 'not-now\n' > "$MARKER" ;;
-  *) printf 'unexpected renderer choice bytes: ' >&2; printf '%s' "$renderer_choice" | od -An -tx1 >&2; exit 3 ;;
-esac
-printf 'WARNING: Loading development channels\n'
-printf 'Channels: server:plow-chat\n'
-printf 'Enter to confirm · Esc to cancel\n'
-IFS= read -r _dev_choice
-SH
-  chmod 700 "$fake"
-  MARKER="$marker" expect -f "$SPAWN_CONFIRM" bash "$fake" >/dev/null
-  grep -qx 'not-now' "$marker" || {
-    err "spawn-confirm did not choose Not now for fullscreen renderer prompt"
-    return 1
-  }
-  log "PASS spawn-confirm selects explicit option 2 for fragmented fullscreen renderer prompt"
-}
-
-cmd_selftest() {
-  require_tool bun
-  require_tool curl
-  require_tool jq
-  [[ -x "$ACTIVATE_PIECE" ]] || {
-    err "activate piece missing or not executable: $ACTIVATE_PIECE"
-    return 1
-  }
-  [[ -f "$PLOW_STUB" ]] || {
-    err "stub not found: $PLOW_STUB"
-    return 1
-  }
-
-  local root stub_dir server_info base_url home state_file chat_uid text_pid activate_rc calls_file send_out probe_log probe_pid before_ws after_ws
-  local group_home
-  root="$(mktemp -d "${TMPDIR:-/tmp}/domo-ready-selftest.XXXXXX")"
-  stub_dir="$root/stub"
-  server_info="$stub_dir/server-info"
-  home="$root/home"
-  state_file="$home/.claude/plow-chat/state.json"
-  calls_file="$root/calls.json"
-  send_out="$root/ready-send.json"
-  probe_log="$root/channel-probe.log"
-
-  selftest_host_registration_gate "$root"
-  selftest_spawn_confirm_renderer_prompt "$root"
-
-  log "Starting Plow stub: $root"
-  PLOW_STUB_STATE_DIR="$stub_dir" bun run "$PLOW_STUB" >"$root/stub.out" 2>"$root/stub.err" &
-  PIDS+=("$!")
-  wait_for_file "$server_info" 15 || {
-    err "stub did not write server-info"
-    return 1
-  }
-  base_url="$(jq -r '.base_url' "$server_info")"
-  mkdir -p "$home"
-  set_domo_home "$home"
-
-  auto_text_stub_code "$base_url" "$home/.claude/plow-chat/activation.json" "$root/seen-codes" &
-  text_pid="$!"
-  PIDS+=("$text_pid")
-
-  set +e
-  PLOW_CHAT_BASE_URL="$base_url" \
-  DOMO_HOME="$home" \
-  DOMO_ACTIVATION_TIMEOUT_SECONDS=20 \
-  DOMO_ACTIVATION_POLL_INTERVAL_SECONDS=1 \
-    "$ACTIVATE_PIECE" activate >"$root/activate.out" 2>"$root/activate.err"
-  activate_rc=$?
-  set -e
-  kill "$text_pid" >/dev/null 2>&1 || true
-  [[ "$activate_rc" -eq 0 ]] || {
-    err "Piece-3 stub activation failed rc=$activate_rc"
-    sed 's/^/[domo-ready] activate stderr: /' "$root/activate.err" | tail -40
-    return "$activate_rc"
-  }
-
-  validate_piece3_state
-  write_default_config
-
-  chat_uid="$(jq -r '.chat_uid' "$state_file")"
-  before_ws="$(curl -fsS "$base_url/_stub/calls" | jq -r '.ws_connect // 0')"
-  probe_pid="$(start_channel_probe_daemon "$state_file" "$probe_log")"
-  PIDS+=("$probe_pid")
-  local deadline=$(( $(date +%s) + 15 ))
-  while [[ "$(date +%s)" -lt "$deadline" ]]; do
-    after_ws="$(curl -fsS "$base_url/_stub/calls" | jq -r '.ws_connect // 0')"
-    if [[ "$after_ws" -gt "$before_ws" ]]; then break; fi
-    sleep 0.2
-  done
-  after_ws="$(curl -fsS "$base_url/_stub/calls" | jq -r '.ws_connect // 0')"
-  [[ "$after_ws" -gt "$before_ws" ]] || {
-    err "channel probe daemon did not connect websocket"
-    cat "$probe_log" >&2 || true
-    return 1
-  }
-
-  send_ready_via_channel_tool "$state_file" "$READY_TEXT" "$base_url" "$chat_uid" "$send_out" >/dev/null
-
-  curl -fsS "$base_url/_stub/calls" > "$calls_file"
-  jq -e --arg chat_uid "$chat_uid" '
-    .ws_connect >= 1
-    and .outbound_messages >= 1
-    and ([.sequence[] | select(.method == "POST") | .path] | index("/v1/chats/" + $chat_uid + "/messages") != null)
-  ' "$calls_file" >/dev/null || {
-    err "stub call sequence did not record ready outbound"
-    return 1
-  }
-  curl -fsS "$base_url/_stub/messages?chat_uid=$(jq -rn --arg v "$chat_uid" '$v|@uri')" > "$root/messages.json"
-  jq -e --arg body "$READY_TEXT" '
-    (.data // []) | any(.direction == "outbound" and .body == $body)
-  ' "$root/messages.json" >/dev/null || {
-    err "stub messages did not include ready text"
-    return 1
-  }
-
-  group_home="$root/group-ready-home"
-  mkdir -p "$group_home"
-  set_domo_home "$group_home"
-  mkdir -p "$PLOW_DIR"
-  jq -n '{base_url:"http://127.0.0.1:1", token:"group-token", chat_uid:"cht_group_ready"}' > "$PLOW_STATE_FILE"
-  chmod 600 "$PLOW_STATE_FILE"
-  jq -n '{
-    interview:{mode:"group",status:"collected",members:["Alex","Pat"]},
-    activation:"complete",
-    activation_detail:{
-      mode:"group",
-      chat_active:true,
-      participants:[
-        {uid:"cp_ready_001",display_name:"Alex",status:"verified"},
-        {uid:"cp_ready_002",display_name:"Pat",status:"verified"}
-      ]
-    }
-  }' > "$INSTALL_STATE_FILE"
-  chmod 600 "$INSTALL_STATE_FILE"
-  write_default_config
-  jq -e '
-    .mode == "group"
-    and (.system_prompt | contains("verified household group text"))
-    and (.system_prompt | contains("Alex"))
-    and (.system_prompt | contains("Pat"))
-  ' "$READY_CONFIG_FILE" >/dev/null || {
-    err "group ready config did not record group prompt/member names"
-    jq . "$READY_CONFIG_FILE" >&2 || true
-    return 1
-  }
-  grep -F "This is a group household" "$WORKSPACE/CLAUDE.md" >/dev/null || {
-    err "group CLAUDE.md did not use group household prompt"
-    return 1
-  }
-
-  log "PASS Piece-3 stub activation produced chmod-600 state: $state_file"
-  log "PASS channel daemon connected: ws_connect $before_ws -> $after_ws"
-  log "PASS ready text recorded by stub: $READY_TEXT"
-  log "PASS group ready config authors group prompt with member names"
-  log "PASS outbound call sequence: $(jq -r '[.sequence[].path] | join(" -> ")' "$calls_file")"
-  log "Selftest artifacts: $root"
-}
-
 cmd_harness() {
   log "Isolated DOMO_HOME: $DOMO_HOME"
   log "Isolated CLAUDE_CONFIG_DIR: $CONFIG_DIR"
@@ -1044,7 +721,6 @@ Commands:
   harness   Print and run the one-command real ready harness
   status    Print non-secret readiness status
   stop      Stop the background daemon and sweep the channel child
-  selftest  Stub chain: Piece-3 activation -> config -> channel connect -> ready text
 
 If DOMO_HOME is omitted, a temp isolated home is created.
 USAGE
@@ -1057,7 +733,6 @@ case "${1:-harness}" in
   harness) shift; cmd_harness "$@" ;;
   status) shift; cmd_status "$@" ;;
   stop) shift; cmd_stop "$@" ;;
-  selftest) shift; cmd_selftest "$@" ;;
   -h|--help|help) usage ;;
   *) err "unknown command '${1:-}'"; usage >&2; exit 2 ;;
 esac
