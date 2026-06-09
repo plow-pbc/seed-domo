@@ -14,9 +14,9 @@ back into the same texting thread.
 
 Domo is delivered as a **SEED**: a descriptive knowledge base plus generated
 runtime artifacts that an installing agent uses to stand up a live Domo. This
-slice installs one solo household line. The install is a front-loaded action
-board: the agent does the API calls and verification, while you only complete
-the human-only actions.
+slice installs a solo or group household chat. The install is a front-loaded
+action board: the agent does the API calls and verification, while you only
+complete the human-only actions.
 
 `ref/` currently holds the remaining monolith implementation reference while the
 repo is being converted into sub-SEEDs. Converted slices live under `seeds/` and
@@ -49,7 +49,7 @@ export DOMO_HOME="$HOME/.domo"
 ```
 
 Then the installing agent follows `SEED.md`, installs converted sub-SEEDs first,
-and runs the remaining verified pieces in order:
+and runs the generated helpers in order:
 
 1. **Login.** `seeds/claude-instance/SEED.md` generates isolated Claude
    subscription auth helpers under `$DOMO_HOME/runtime/claude-instance` and
@@ -57,10 +57,14 @@ and runs the remaining verified pieces in order:
 2. **Calendar.** `seeds/calendar-connector/SEED.md` generates connector probe
    helpers under `$DOMO_HOME/runtime/calendar-connector` and verifies the
    claude.ai Google Calendar connector for that same account.
-3. **Activation.** `ref/domo-activate-piece.sh` performs the Plow text
-   activation and writes chmod-600 channel state.
-4. **Ready.** `ref/domo-ready-piece.sh` authors the workspace, starts the daemon,
-   and sends the first ready text.
+3. **Activation.** `seeds/plow-activation/SEED.md` generates Plow text
+   activation helpers under `$DOMO_HOME/runtime/plow-activation`, supports solo
+   or group mode, and writes chmod-600 channel state.
+4. **Runtime.** `seeds/domo-runtime/SEED.md` generates
+   `$DOMO_HOME/bin/domo` and runtime helpers under
+   `$DOMO_HOME/runtime/domo-runtime`; it authors the workspace, starts the
+   pinned-session daemon, gates readiness on host channel registration, and
+   sends the first ready text.
 
 The only things you do are the interactive subscription login, the browser
 connector toggle, and texting the activation message from the relevant phone.
@@ -69,22 +73,20 @@ printed as secrets.
 
 ## Usage
 
-After install, Domo runs as one pinned, persistent session. The reference CLI is:
+After install, Domo runs as one pinned, persistent session. The generated CLI is:
 
 ```bash
-export DOMO_HOME="$HOME/.domo"
-ref/domo setup       # isolated dirs, workspace, pinned session UUID
-ref/domo activate    # Plow activation; normally run by the installer
-ref/domo login       # interactive Claude subscription login in this instance
-ref/domo start       # launch the background daemon
-ref/domo status      # config + daemon liveness + channel state, no secrets
-ref/domo logs        # readable transcript feed
-ref/domo doctor      # read-only preflight
-ref/domo stop        # stop daemon and scoped channel children
+$HOME/.domo/bin/domo ready   # launch the daemon and send the first ready text
+$HOME/.domo/bin/domo start   # launch the background daemon
+$HOME/.domo/bin/domo status  # config + daemon liveness + channel state, no secrets
+$HOME/.domo/bin/domo logs    # readable transcript feed
+$HOME/.domo/bin/domo doctor  # read-only preflight
+$HOME/.domo/bin/domo stop    # stop daemon and scoped channel children
+$HOME/.domo/bin/domo reset   # delegated cleanup/logout plus guarded local removal
 ```
 
-`ref/domo logs` renders inbound texts, replies, and tool activity. Add `--raw`
-for the underlying PTY capture or `--no-follow` for a one-shot read.
+`$HOME/.domo/bin/domo logs` renders inbound texts, replies, and tool activity.
+Add `--raw` for the underlying PTY capture or `--no-follow` for a one-shot read.
 
 ## Security Posture
 

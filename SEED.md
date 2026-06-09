@@ -21,7 +21,7 @@ resolved absolute path inside generated runtime artifacts.
 
 Hard dependencies:
 
-- **macOS** - the reference ready piece uses the local macOS environment for the
+- **macOS** - the generated runtime uses the local macOS environment for the
   Claude Code daemon.
 - **Claude Code CLI** - `claude` MUST be on `PATH`.
 - **Claude subscription auth** - Domo MUST use interactive Claude subscription
@@ -46,6 +46,7 @@ Converted composed slices are installed before the remaining monolith actions:
 1. [Purpose](seeds/claude-instance/SEED.md#purpose)
 2. [Purpose](seeds/calendar-connector/SEED.md#purpose)
 3. [Purpose](seeds/plow-activation/SEED.md#purpose)
+4. [Purpose](seeds/domo-runtime/SEED.md#purpose)
 
 ## Objects
 
@@ -74,14 +75,17 @@ Converted composed slices are installed before the remaining monolith actions:
   generated Plow activation helpers under
   `$DOMO_HOME/runtime/plow-activation`, the solo/group election, the local Plow
   channel state, and server-side chat teardown.
-- **Ready piece** - `ref/domo-ready-piece.sh`. It owns default Domo config,
-  daemon startup, and the first outbound ready text.
+- **Domo runtime sub-SEED** - `seeds/domo-runtime/SEED.md`. It owns the
+  generated runtime helpers under `$DOMO_HOME/runtime/domo-runtime`, the
+  generated operator CLI at `$DOMO_HOME/bin/domo`, workspace authoring,
+  channel registration, pinned-session daemon startup, readiness gating, the
+  first outbound ready text, status/logs/stop/doctor, and reset delegation.
 - **Plow channel state** - `$DOMO_HOME/.claude/plow-chat/state.json`, written by
   the generated Plow activation helper with chmod 600 and shape
   `{base_url, token, chat_uid}`. The token MUST never be printed, logged,
   committed, or passed in argv.
-- **The Domo workspace** - `$DOMO_HOME/workspace`, authored by the ready piece
-  with a lean default `CLAUDE.md` for a solo or group household texting
+- **The Domo workspace** - `$DOMO_HOME/workspace`, authored by the generated
+  runtime with a lean default `CLAUDE.md` for a solo or group household texting
   assistant with Calendar access.
 - **The Plow Chat channel** - `ref/channels/plow-chat`, an MCP stdio server with
   the `claude/channel` capability. It reads `PLOW_CHAT_STATE`; it MUST NOT
@@ -99,9 +103,10 @@ Converted composed slices are installed before the remaining monolith actions:
 ### Domo is installed
 
 This action installs the Domo slice. The installing agent MUST first install the
-converted `claude-instance`, `calendar-connector`, and `plow-activation`
-sub-SEED dependencies, then run the remaining verified monolith pieces below in order against
-`DOMO_HOME=$HOME/.domo`. The agent MUST NOT reimplement piece internals.
+converted `claude-instance`, `calendar-connector`, `plow-activation`, and
+`domo-runtime` sub-SEED dependencies, then run the generated helpers below in
+order against `DOMO_HOME=$HOME/.domo`. The agent MUST NOT reimplement sub-SEED
+internals.
 
 Before starting, the agent sets the fixed install home and shows it:
 
@@ -338,27 +343,31 @@ ref/installer/client.sh installer_step activate ok "Text line activated" || true
 ref/installer/client.sh installer_step ready active "Starting Domo" || true
 ```
 
-**Step 4 - Ready.**
+**Step 4 - Runtime ready.**
 
 Who runs what:
 
 - The agent runs:
 
   ```bash
-  DOMO_HOME=$HOME/.domo ref/domo-ready-piece.sh ready
+  $DOMO_HOME/bin/domo ready
   ```
 
-The ready piece authors the default solo or group Domo config based on
+The generated runtime authors the default solo or group Domo config based on
 `$DOMO_HOME/install-state.json`, registers the Plow chat channel, starts the
-background Claude daemon, and sends the deterministic first ready text through
-the real Plow `reply` path to the activated chat.
+background Claude daemon on the pinned session, accepts readiness only after a
+post-snapshot host MCP log line proves
+`Channel notifications registered` for that pinned session, and then sends the
+deterministic first ready text through the real Plow `reply` path to the
+activated chat.
 
-Done when the ready piece reports the ready text was sent. The user should then
-receive Domo's first text on the phone used in Step 3.
+Done when `$DOMO_HOME/bin/domo ready` exits 0 after host-log readiness and the
+ready text is sent. The user should then receive Domo's first text on the phone
+used in Step 3.
 
 Dashboard updates:
 
-Before running the ready piece:
+Before running the generated runtime:
 
 ```bash
 ref/installer/client.sh installer_step ready active "Starting Domo" || true
@@ -392,17 +401,20 @@ generated `cleanup` helper from this sub-SEED.
 
 ### Domo runs
 
-Runtime startup is owned by:
+Runtime startup is owned by the `domo-runtime` sub-SEED and its generated
+operator CLI:
 
 ```bash
-DOMO_HOME=$HOME/.domo ref/domo-ready-piece.sh ready
+$DOMO_HOME/bin/domo ready
 ```
 
-The ready piece writes a lean default Domo config for the solo or group
-household, starts the Claude Code daemon with the Plow chat channel loaded, and
-sends the first ready text through the channel `reply` tool.
-`ref/domo-ready-piece.sh status` prints non-secret readiness state.
-`ref/domo-ready-piece.sh stop` stops the daemon and sweeps the channel child.
+The generated runtime writes a lean default Domo config for the solo or group
+household, starts the Claude Code daemon with the Plow chat channel loaded,
+gates readiness on the host MCP log registration line for the pinned session,
+and sends the first ready text through the channel `reply` tool only after that
+gate passes. `$DOMO_HOME/bin/domo status` prints non-secret readiness state,
+`$DOMO_HOME/bin/domo logs` renders transcript or stripped raw logs, and
+`$DOMO_HOME/bin/domo stop` stops the daemon and sweeps the channel child.
 
 ### Domo replies / reads the calendar / reports activity
 
@@ -463,11 +475,18 @@ bash ref/verify.sh
    - successful activation writes chmod-600 `{base_url, token, chat_uid}` state;
    - cleanup invokes server-side chat teardown and removes local Plow state.
 
-4. Ready evidence is collected from a real install run: the channel server must
-   connect and advertise `claude/channel` plus the `reply` tool, and the first
-   ready text must land through the real Plow message path. Development
-   checkouts MAY keep a private rehearsal overlay under ignored `docs/testing/`;
-   that overlay is not part of the shipped SEED contract.
+4. The `domo-runtime` sub-SEED verification confirms runtime readiness:
+
+   - generated runtime helpers exist under `$DOMO_HOME/runtime/domo-runtime`;
+   - generated `$DOMO_HOME/bin/domo` contains baked absolute paths only and does
+     not read `DOMO_HOME`;
+   - the readiness gate accepts only a post-snapshot
+     `Channel notifications registered` host-log line for the pinned session
+     and rejects stale, other-session, and `skipped` lines;
+   - the first ready text is sent only after readiness and lands through the
+     real Plow message path;
+   - reset invokes the generated Plow cleanup helper and generated Claude logout
+     helper instead of re-implementing either teardown.
 
 **Runtime checks** hold only after the install action completes:
 
@@ -476,8 +495,8 @@ bash ref/verify.sh
 2. Google Calendar is confirmed from inside that same isolated account.
 3. Plow state exists at `$DOMO_HOME/.claude/plow-chat/state.json`, is chmod 600,
    and contains exactly `{base_url, token, chat_uid}`.
-4. The ready piece has started the daemon and sent the first ready text to the
-   activated phone.
+4. The generated runtime has started the daemon, proved pinned-session host
+   channel registration, and sent the first ready text to the activated phone.
 
 ## Feedback
 
