@@ -54,8 +54,9 @@ and runs the remaining verified pieces in order:
 1. **Login.** `seeds/claude-instance/SEED.md` generates isolated Claude
    subscription auth helpers under `$DOMO_HOME/runtime/claude-instance` and
    verifies `$DOMO_HOME/.claude`.
-2. **Calendar.** `ref/domo-calendar-piece.sh` verifies the claude.ai Google
-   Calendar connector for that same account.
+2. **Calendar.** `seeds/calendar-connector/SEED.md` generates connector probe
+   helpers under `$DOMO_HOME/runtime/calendar-connector` and verifies the
+   claude.ai Google Calendar connector for that same account.
 3. **Activation.** `ref/domo-activate-piece.sh` performs the Plow text
    activation and writes chmod-600 channel state.
 4. **Ready.** `ref/domo-ready-piece.sh` authors the workspace, starts the daemon,

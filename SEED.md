@@ -44,6 +44,7 @@ missing dependency it cannot resolve.
 Converted composed slices are installed before the remaining monolith actions:
 
 1. [Purpose](seeds/claude-instance/SEED.md#purpose)
+2. [Purpose](seeds/calendar-connector/SEED.md#purpose)
 
 ## Objects
 
@@ -65,8 +66,9 @@ Converted composed slices are installed before the remaining monolith actions:
   isolated Claude subscription login, the generated login/auth-status/logout
   helpers under `$DOMO_HOME/runtime/claude-instance`, metered-key-unset launch
   discipline, and seeded first-run prompt immunity under `$DOMO_HOME/.claude`.
-- **Calendar piece** - `ref/domo-calendar-piece.sh`. It owns the Google Calendar
-  connector probe.
+- **Calendar connector sub-SEED** - `seeds/calendar-connector/SEED.md`. It owns
+  the generated Calendar connector probe and strict stream-json transcript
+  parser under `$DOMO_HOME/runtime/calendar-connector`.
 - **Activation piece** - `ref/domo-activate-piece.sh`. It owns solo and group
   Plow activation and writes the Plow channel state.
 - **Ready piece** - `ref/domo-ready-piece.sh`. It owns default Domo config,
@@ -93,9 +95,9 @@ Converted composed slices are installed before the remaining monolith actions:
 ### Domo is installed
 
 This action installs the Domo slice. The installing agent MUST first install the
-converted `claude-instance` sub-SEED dependency, then run the three remaining
-verified monolith pieces below in order against `DOMO_HOME=$HOME/.domo`. The
-agent MUST NOT reimplement piece internals.
+converted `claude-instance` and `calendar-connector` sub-SEED dependencies, then
+run the remaining verified monolith pieces below in order against
+`DOMO_HOME=$HOME/.domo`. The agent MUST NOT reimplement piece internals.
 
 Before starting, the agent sets the fixed install home and shows it:
 
@@ -196,6 +198,15 @@ ref/installer/client.sh installer_step login ok "Signed in to Claude" || true
 
 **Step 2 - Calendar.**
 
+Calendar is owned by the `calendar-connector` sub-SEED installed before this
+root action. The installing agent MUST NOT run `ref/domo-calendar-piece.sh` as
+the root Calendar step. Instead, it uses the generated check and wait helpers
+from:
+
+```text
+$DOMO_HOME/runtime/calendar-connector
+```
+
 Who runs what:
 
 - The agent pushes the Calendar step as `waiting`; this is the dashboard's
@@ -214,11 +225,11 @@ Who runs what:
   ```
 
 - After relaying the connector action, the agent runs the blocking Calendar wait
-  while the dashboard remains in the `waiting` state. The wait repeatedly probes
-  the connector until it is confirmed:
+  while the dashboard remains in the `waiting` state. The generated wait helper
+  repeatedly probes the connector until it is confirmed:
 
   ```bash
-  DOMO_HOME=$HOME/.domo ref/domo-calendar-piece.sh wait
+  $DOMO_HOME/runtime/calendar-connector/wait
   ```
 
 Done when the wait command exits 0 after reporting `CONNECTED`. The agent MUST
@@ -434,11 +445,16 @@ bash ref/verify.sh
    - `$DOMO_HOME/.claude/.claude.json` and `$DOMO_HOME/.claude/settings.json`
      are chmod 600 and contain the first-run prompt immunity flags.
 
-2. Calendar piece confirms the connector:
+2. The `calendar-connector` sub-SEED verification confirms the connector:
 
-   ```bash
-   DOMO_HOME=$HOME/.domo ref/domo-calendar-piece.sh check
-   ```
+   - generated runtime helpers exist under
+     `$DOMO_HOME/runtime/calendar-connector`;
+   - generated Claude launch paths unset `ANTHROPIC_API_KEY` and
+     `CLAUDE_CODE_OAUTH_TOKEN`;
+   - `check` reports `CONNECTED` only from a strict
+     `tool_use` -> `tool_result` match by `tool_use_id` against the real
+     Google Calendar connector;
+   - the generated text-only transcript fixture parses as `PENDING`.
 
 3. Activation and ready evidence is collected from a real install run: activation
    must show the full `Plow Activate: <code>` message and send-to number, a bare
