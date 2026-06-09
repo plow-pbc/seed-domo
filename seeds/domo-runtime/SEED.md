@@ -27,6 +27,9 @@ Hard dependencies:
 - **`jq`** - used for strict JSON checks and transcript rendering.
 - **`expect`** - used by the generated PTY wrapper to answer the Claude
   development-channel confirmation and keep the daemon alive.
+- **`tmux`** - used as the daemon's long-lived session owner. The generated
+  runtime MUST NOT rely on a bare backgrounded `expect`, `nohup`, or shell job
+  as proof that the Claude TUI remains alive after readiness.
 
 The installing agent MUST resolve the Domo home once before generation,
 defaulting to `$HOME/.domo` for user installs. Dev rehearsals use the stable
@@ -76,6 +79,10 @@ generated `claude` invocation in this slice.
 - **Daemon run dir** - `<HOME>/.claude/run`, containing PID, signature, raw log,
   readiness snapshots, and the ready-send result. These files MUST NOT contain
   the Plow Bearer token.
+- **Daemon tmux session** - a generated, pinned-session-scoped tmux session that
+  owns the Claude TUI process. The pane PID and session name are recorded under
+  `<HOME>/.claude/run` so `status`, `stop`, and `doctor` can assert liveness
+  without relying on stale wrapper PIDs.
 - **Plow channel state** - `<HOME>/.claude/plow-chat/state.json`, chmod 600,
   read from the activation slice and validated by this slice. The token MUST
   never be printed, logged, passed in argv, or committed.
@@ -130,13 +137,17 @@ runtime script as the installed operator entrypoint.
    The generated default MUST NOT use `bypassPermissions`, and this slice MUST
    NOT add a custom PreToolUse allowlist.
 
-6. Generate the PTY wrapper path. When `expect` is available, daemon launch MUST
-   use the generated spawn-confirm wrapper that answers the development-channel
-   confirmation and keeps the session alive. The confirmation matcher MUST use
-   the same stable labels as the Claude instance slice: `Yes, try it` sends `2`;
-   text-style/theme/trust/dev-channel labels press Enter. If a fallback PTY path
-   is generated, it MUST be explicit in `doctor` output and still keep the same
-   launch argv.
+6. Generate the PTY wrapper path. Daemon launch MUST be tmux-backed: create a
+   generated launch script under `<HOME>/.claude/run`, start it with
+   `tmux new-session -d -s <session-name> -c <HOME>/workspace`, and record both
+   the tmux session name and pane PID. Inside tmux, run the generated
+   `spawn-confirm.expect` wrapper around Claude so the development-channel
+   confirmation is answered while the TUI continues to own a persistent PTY. A
+   bare backgrounded `expect`, `nohup`, or shell job is not sufficient. The
+   confirmation matcher MUST use the same stable labels as the Claude instance
+   slice: `Yes, try it` sends `2`; text-style/theme/trust/dev-channel labels
+   press Enter. If `tmux` or `expect` is unavailable, generated `doctor` and
+   `start` MUST fail before declaring readiness.
 
 7. Generate `register-channel` to run, under the isolated Claude config:
 
@@ -170,19 +181,23 @@ runtime script as the installed operator entrypoint.
 9. Generate the two-layer readiness behavior. A connected marker or transcript
    jsonl may be used only as a short diagnostic fallback while waiting for the
    host log. It MUST NOT mark the daemon ready. The host MCP log registration
-   gate is authoritative.
+   gate is authoritative. After the host MCP log registration line is accepted,
+   generated `start` MUST also prove the daemon is still alive on the pinned
+   session by running the same liveness assertion used by `status --assert`.
 
 10. Generate `send-ready` as a direct MCP client that starts the Plow channel
     server with `PLOW_CHAT_STATE=<HOME>/.claude/plow-chat/state.json` and calls
     the `reply` tool with the default ready text. `ready` MUST call `send-ready`
     only after the host-log readiness gate succeeds. A sent ready text is never
-    proof that the daemon is ready.
+    proof that the daemon is ready. After `send-ready` returns, `ready` MUST run
+    `status --assert` and keep it green for at least 2 minutes before reporting
+    success.
 
 11. Generate `status` and `doctor` to validate non-secret runtime state:
     subscription auth is confirmed, metered keys are unset for generated Claude
     paths, Plow state exists and is chmod 600, the pinned session is present,
-    the permission mode is `auto`, and the daemon PID/signature state is
-    consistent. They MUST never print the Plow token.
+    the permission mode is `auto`, and the daemon is alive in the recorded tmux
+    session on the pinned session. They MUST never print the Plow token.
 
 12. Generate `logs` to restore terminal state on exit. It MUST run `stty sane`
     when possible, reset common terminal modes, and pass raw daemon logs through
@@ -191,8 +206,9 @@ runtime script as the installed operator entrypoint.
 
 13. Generate `stop` to stop the wrapper PID, then tree-kill by the recorded
     scoped signature derived from the pinned session id. It MUST also sweep
-    channel-server child processes by the baked channel server path. It MUST NOT
-    match only a generic process name.
+    channel-server child processes by the baked channel server path and kill the
+    recorded tmux session if present. It MUST NOT match only a generic process
+    name.
 
 14. Generate `reset` as an ordered teardown:
 
@@ -328,6 +344,8 @@ Verification runs against the just-generated real instance and generated files.
    grep -F -- '--session-id' "$start"
    grep -F -- '--resume' "$start"
    grep -F 'env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN' "$start"
+   grep -F 'tmux new-session' "$start"
+   grep -F 'tmux display-message' "$start"
    grep -F 'expect' "$start"
    grep -F 'Yes, try it' "$start"
    grep -F 'START_READY_TIMEOUT_SECONDS=60' "$gate"
@@ -338,6 +356,7 @@ Verification runs against the just-generated real instance and generated files.
    grep -F 'stty sane' "$logs"
    grep -F 'strip_ansi' "$logs"
    grep -F 'pkill -TERM -f' "$stop"
+   grep -F 'tmux kill-session' "$stop"
    grep -F '<HOME>/runtime/plow-activation/cleanup' "$reset"
    grep -F '<HOME>/runtime/claude-instance/logout' "$reset"
    grep -F 'safe_remove' "$reset"
@@ -401,6 +420,8 @@ Verification runs against the just-generated real instance and generated files.
     ```bash
     "<HOME>/bin/domo" status --assert
     "<HOME>/bin/domo" doctor
+    sleep 120
+    "<HOME>/bin/domo" status --assert
     token="$(jq -r '.token' "<HOME>/.claude/plow-chat/state.json")"
     test -n "$token"
     ! "<HOME>/bin/domo" status 2>&1 | grep -F -- "$token"
@@ -421,6 +442,7 @@ Verification runs against the just-generated real instance and generated files.
     ```bash
     grep -F 'daemon_kill_pattern' "<HOME>/runtime/domo-runtime/stop"
     grep -F 'pkill -TERM -f' "<HOME>/runtime/domo-runtime/stop"
+    grep -F 'tmux kill-session' "<HOME>/runtime/domo-runtime/stop"
     grep -F '<CHANNEL_DIR>' "<HOME>/runtime/domo-runtime/stop"
     ```
 
