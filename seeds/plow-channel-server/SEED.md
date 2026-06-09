@@ -20,13 +20,13 @@ Hard dependencies:
   written by `seeds/plow-activation/SEED.md` before live Verification can prove
   outbound sends, WebSocket connection, backfill, and DTU-driven inbound
   delivery.
-- **`bun`** - generated package scripts run the channel server with Bun.
+- **`bun`** - the generated MCP registration launches the channel server with
+  Bun.
 
 The installing agent MUST resolve the Domo home once before generation,
-defaulting to `$HOME/.domo` for user installs. Dev rehearsals for this slice use
-the stable auth'd home `~/.domo-rehearsal` when composed with `domo-runtime`.
-Generated runtime files MUST embed that literal path and MUST NOT read
-`DOMO_HOME`, `PLOW_CHAT_STATE`, or `PLOW_CHAT_CONNECTED_MARKER` at runtime.
+defaulting to `$HOME/.domo` for user installs. Generated runtime files MUST
+embed that literal path and MUST NOT read `DOMO_HOME`, `PLOW_CHAT_STATE`, or
+`PLOW_CHAT_CONNECTED_MARKER` at runtime.
 
 ## Objects
 
@@ -48,11 +48,9 @@ Generated runtime files MUST embed that literal path and MUST NOT read
   exactly `{base_url, token, chat_uid}` as written by `plow-activation`.
   `chat_uid` is authoritative for channel notification `chat_id`. The token
   MUST never be printed, logged, passed in argv, or committed.
-- **Inbound high-water mark** -
-  `<HOME>/.claude/plow-chat/last_seen.json`, chmod 600, storing recently seen
-  inbound message UIDs. The generated server MUST cap this list at 2000 UIDs.
-- **Connected marker** - `<HOME>/.claude/plow-chat/connected`, non-secret,
-  written when a Plow WebSocket frame proves channel liveness.
+- **Connected marker** - `<HOME>/.claude/plow-chat/connected`, a non-secret
+  marker read by operator status and diagnostics after the channel server proves
+  WebSocket liveness.
 - **MCP channel surface** - the generated server advertises
   `experimental["claude/channel"]`, exposes exactly the `reply` tool, and emits
   channel notifications to Claude.
@@ -171,142 +169,35 @@ head-chef escalation decision explicitly authorizes it.
 
 ## Verification
 
-Verification runs against the just-generated real instance and generated files.
-Dev rehearsal runs against the local Plow and DTU named in
-`docs/testing/e2e-rehearsal.md`.
+Verification runs against the just-generated real instance. It is live operator
+evidence only, plus the thin self-checks needed to decide whether the
+regenerate-once policy has passed or failed.
 
-1. The externally consumed interface paths MUST exist, while internal runtime
-   layout remains the generating agent's choice:
+1. The generated channel interface MUST exist where `domo-runtime` consumes it,
+   and the secret-bearing channel state MUST be private:
 
    ```bash
    test -d "<HOME>/runtime/plow-channel-server"
    test -f "<HOME>/runtime/plow-channel-server/.mcp.json"
-   test -d "<HOME>/.claude/plow-chat"
-   test -f "<HOME>/.claude/plow-chat/state.json"
    test "$(stat -f '%Lp' "<HOME>/.claude/plow-chat/state.json" 2>/dev/null || stat -c '%a' "<HOME>/.claude/plow-chat/state.json")" = 600
-   jq -e '.mcpServers["plow-chat"]' "<HOME>/runtime/plow-channel-server/.mcp.json"
-   jq -e '(.mcpServers["plow-chat"].command | type == "string" and length > 0)
-     and (.mcpServers["plow-chat"].args // [] | tostring | contains("<HOME>/runtime/plow-channel-server"))' \
-     "<HOME>/runtime/plow-channel-server/.mcp.json"
    ```
 
-2. No generated file in `<HOME>/runtime/plow-channel-server` MAY contain a
-   runtime read of `DOMO_HOME`, `PLOW_CHAT_STATE`, or
-   `PLOW_CHAT_CONNECTED_MARKER`; generated files MUST contain the baked home:
+2. Start the real generated operator path that consumes this channel server and
+   prove the daemon stays up. Evidence MUST include `status --assert` returning
+   0 immediately after start and again after a hold of at least 120 seconds.
+
+3. Send through the real `reply` path and confirm the message lands in the Plow
+   chat with `status` equal to `sent`. Evidence MUST record the non-secret chat
+   UID plus the sent message UID/body/status, and MUST NOT record the token.
+
+4. Token hygiene MUST be clean. The Plow token value from `state.json` MUST NOT
+   appear in argv, generated logs, committed files, dashboard text, or the
+   install evidence:
 
    ```bash
-   grep -R '<HOME>' "<HOME>/runtime/plow-channel-server"
-   ! grep -R 'DOMO_HOME' "<HOME>/runtime/plow-channel-server"
-   ! grep -R 'PLOW_CHAT_STATE' "<HOME>/runtime/plow-channel-server"
-   ! grep -R 'PLOW_CHAT_CONNECTED_MARKER' "<HOME>/runtime/plow-channel-server"
+   token="$(jq -r '.token' "<HOME>/.claude/plow-chat/state.json")"
+   test -n "$token"
+   ! pgrep -af "$token"
+   ! grep -R -- "$token" "<HOME>/.claude/run" 2>/dev/null
+   ! git grep -F -- "$token"
    ```
-
-3. The generated server MUST visibly read from the cloned `seed-plow-chat`
-   contract during generation, and generated code/prose under
-   `<HOME>/runtime/plow-channel-server` MUST NOT carry a local OpenAPI clone or
-   Domo-authored endpoint inventory. Rehearsal evidence MUST record the fresh
-   contract clone path and `git rev-parse HEAD`, which MUST be
-   `b4656d9d2fda82c9525dadc186834003b996055c`.
-
-4. Static MCP and channel gates MUST pass:
-
-   ```bash
-   runtime="<HOME>/runtime/plow-channel-server"
-   grep -R 'claude/channel' "$runtime"
-   grep -R 'notifications/claude/channel' "$runtime"
-   grep -R 'Anything you want them to see MUST go through the reply tool' "$runtime"
-   grep -R 'reply' "$runtime"
-   grep -R 'required' "$runtime"
-   grep -R 'text' "$runtime"
-   grep -R 'provider_key' "$runtime"
-   grep -R 'chat_not_ready' "$runtime"
-   grep -R 'state.chat_uid' "$runtime"
-   ```
-
-5. Static behavioral pins MUST pass:
-
-   ```bash
-   runtime="<HOME>/runtime/plow-channel-server"
-   grep -R 'CONNECT_TIMEOUT_MS = 30000' "$runtime"
-   grep -R 'IDLE_TIMEOUT_MS = 90000' "$runtime"
-   grep -R 'INITIAL_BACKOFF_MS = 1000' "$runtime"
-   grep -R 'MAX_BACKOFF_MS = 30000' "$runtime"
-   grep -R 'BACKOFF_RESET_AFTER_MS = 10000' "$runtime"
-   grep -R 'STATE_REPOLL_MS = 3000' "$runtime"
-   grep -R 'LAST_SEEN_CAP = 2000' "$runtime"
-   grep -R 'last_seen.json' "$runtime"
-   grep -R 'connected' "$runtime"
-   grep -R 'chmod' "$runtime"
-   grep -R '0o600' "$runtime"
-   ```
-
-6. With absent state and then malformed state, the generated server MUST start,
-   advertise the `claude/channel` capability and `reply` tool, keep running,
-   return a `reply` tool error, and continue re-polling. Rehearsal evidence
-   MUST include the MCP initialize/list-tools/call-tool transcript and stderr
-   lines with no token.
-
-7. After valid activation state exists, the generated server MUST WebSocket
-   connect to the local Plow. A `connected` frame MUST write
-   `<HOME>/.claude/plow-chat/connected`, and the marker MUST include the
-   non-secret chat UID. The connected frame is liveness for this slice only and
-   MUST NOT be treated as activation progress.
-
-8. A direct MCP `reply` tool call through the generated server MUST land as an
-   outbound message in the local Plow chat. Rehearsal evidence MUST record the
-   non-secret chat UID and sent message UID/body, not the token.
-
-9. Backfill replay suppression MUST be exercised through a daemon restart:
-   after history exists, stop and restart the generated server, capture channel
-   notifications, and assert zero historical messages are redelivered. Then send
-   a fresh inbound via the DTU and assert exactly that fresh message is
-   delivered.
-
-10. Inbound de-dup MUST be exercised with a repeated inbound UID or equivalent
-    local-Plow replay. The repeated message MUST be delivered once, and
-    `<HOME>/.claude/plow-chat/last_seen.json` MUST exist, be chmod 600, and
-    contain no more than 2000 UIDs:
-
-    ```bash
-    test "$(stat -f '%Lp' "<HOME>/.claude/plow-chat/last_seen.json" 2>/dev/null || stat -c '%a' "<HOME>/.claude/plow-chat/last_seen.json")" = 600
-    jq -e 'type == "array" and length <= 2000' "<HOME>/.claude/plow-chat/last_seen.json"
-    ```
-
-11. Display-name sanitization MUST be exercised via DTU inbound. Send an inbound
-    whose sender display name contains `"`, `<`, `>`, carriage return, or
-    newline if the DTU supports a display-name field; otherwise record the DTU
-    limitation and exercise the same received-message path with local Plow
-    inbound data. Delivered channel notification meta MUST strip those
-    characters or default `user` to `You`.
-
-12. A named review checklist MUST name any invariant not directly observable
-    through local Plow and record its evidence. Its path is the generating
-    agent's choice and MUST be recorded in the rehearsal log. At minimum it MUST
-    include watchdog pins, backoff pins, token-redaction logging, and the
-    `connected`-is-liveness / activation-ignores-connected cross-note.
-
-13. Token hygiene MUST be clean. The Plow token value from `state.json` MUST NOT
-    appear in argv, generated runtime files, stderr/stdout logs, committed
-    files, dashboard text, or rehearsal logs:
-
-    ```bash
-    token="$(jq -r '.token' "<HOME>/.claude/plow-chat/state.json")"
-    test -n "$token"
-    ! pgrep -af "$token"
-    ! grep -R -- "$token" "<HOME>/runtime/plow-channel-server" "<HOME>/.claude/run" 2>/dev/null
-    ! git grep -F -- "$token"
-    ```
-
-14. Composed runtime evidence MUST be recollected after `domo-runtime` is
-    regenerated with `<HOME>/runtime/plow-channel-server` as its baked channel
-    path: channel registration succeeds, the daemon round trip lands in the
-    local Plow chat, `stop` sweeps channel children by that generated path, and
-    the owed group-authoring branch writes a group household prompt with member
-    display names.
-
-15. The install rehearsal per `docs/testing/e2e-rehearsal.md` MUST complete
-    with a kept rehearsal log. The log MUST name the single installing agent for
-    this slice attempt, record every generation attempt, record
-    `git rev-parse HEAD` after the implementation commit, include the
-    `bash ref/verify.sh` run, include scratch-dir evidence for negative drills,
-    and include every Verification item above.

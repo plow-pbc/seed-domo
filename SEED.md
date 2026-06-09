@@ -79,7 +79,7 @@ Converted composed slices are installed before the remaining monolith actions:
   owns the generated MCP channel server under
   `$DOMO_HOME/runtime/plow-channel-server`, the `claude/channel` capability,
   the `reply` tool, inbound notification delivery, WebSocket liveness,
-  backfill/dedup state, and token-redaction discipline for its surface.
+  backfill/dedup behavior, and token-redaction discipline for its surface.
 - **Domo runtime sub-SEED** - `seeds/domo-runtime/SEED.md`. It owns the
   generated runtime helpers under `$DOMO_HOME/runtime/domo-runtime`, the
   generated operator CLI at `$DOMO_HOME/bin/domo`, workspace authoring,
@@ -486,17 +486,12 @@ bash ref/verify.sh
 
    - generated channel interface exists under
      `$DOMO_HOME/runtime/plow-channel-server`;
-   - generated `.mcp.json` registers `plow-chat` from that generated channel
-     directory;
-   - it advertises `claude/channel` and the `reply` tool;
-   - WebSocket connection writes the non-secret connected marker;
-   - `reply` lands through the real Plow message path;
-   - restart backfill does not replay historical inbound messages;
-   - repeated inbound messages are de-duplicated with chmod-600
-     `last_seen.json`;
-   - malformed or absent state never crashes the MCP transport;
-   - display names are sanitized before channel delivery;
-   - no Bearer token appears in logs, argv, committed files, or rehearsal logs.
+   - channel state is chmod 600;
+   - the real generated operator starts and stays up through
+     `status --assert` plus a hold;
+   - a real `reply` lands in the chat with `status == "sent"`;
+   - no Bearer token appears in logs, argv, committed files, dashboard text, or
+     install evidence.
 
 5. The `domo-runtime` sub-SEED verification confirms runtime readiness:
 
