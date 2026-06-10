@@ -11,442 +11,224 @@ declaration and MUST NOT re-declare it.
 
 ## Dependencies
 
-`seed-domo` stands up one live, text-reachable Domo on the user's Mac. The
-install action is agent-driven: an installing agent reads this `SEED.md` and runs
-the verified piece scripts in `ref/` against the dedicated persistent
-`DOMO_HOME=$HOME/.domo`.
+`seed-domo` installs one live, text-reachable Domo on the user's Mac. The
+installing agent performs a leaves-first walk: it first reads and verifies the
+external Plow contract SEED, then installs each composed slice below, then runs
+this root's union Verification against the same generated instance. The root
+MUST NOT regenerate a slice during union Verification.
 
-Hard dependencies:
+Hard dependencies, ordered hardware to accounts to software:
 
-- **macOS** - the reference ready piece uses the local macOS environment for the
-  Claude Code daemon.
-- **Claude Code CLI** - `claude` MUST be on `PATH`.
-- **Claude subscription auth** - Domo MUST use interactive Claude subscription
-  auth in `$DOMO_HOME/.claude`. `ANTHROPIC_API_KEY` and
-  `CLAUDE_CODE_OAUTH_TOKEN` MUST be unset for the piece invocations so Domo does
-  not fall back to metered API billing or leaked ambient tokens.
-- **claude.ai Google Calendar connector** - Google Calendar MUST be connected on
+- **macOS** - the generated runtime targets the user's local Mac.
+- **Claude subscription auth** - Domo uses Claude Code's `claude.ai`
+  subscription login, never metered API-key billing.
+- **claude.ai Google Calendar connector** - Google Calendar must be connected on
   the same Anthropic account used for Domo login.
-- **Plow Chat API** - activation uses the real Plow API by default at
-  `https://api.plow.co`.
-- **`bun`** - runs the Plow chat channel server and piece selftests.
-- **`jq`** - performs strict JSON validation.
-- **`curl`** - performs Plow HTTP calls.
-- **`expect`** - answers the Claude development-channel confirmation for the
-  background daemon.
+- **Plow Chat API account** - activation uses the Plow Chat contract surfaced by
+  `seed-plow-chat`.
+- **Claude Code CLI** - `claude` MUST be on `PATH`.
+- **`bun`** - used by the generated Plow channel server and direct MCP sender.
+- **`jq`** - used for strict JSON checks.
+- **`curl`** - used for Plow HTTP calls.
+- **`expect`** - used by generated Claude TUI wrappers.
+- **`tmux`** - used as the generated daemon's long-lived session owner.
 
-The agent MUST surface missing hard dependencies early and stop on the first
-missing dependency it cannot resolve.
+Before slice 1, the installing agent MUST resolve the baked Domo home once,
+defaulting to the absolute path for `$HOME/.domo` in a user install. That path is
+an install constant carried into every slice generation. Generated entrypoints
+MUST embed the concrete path and MUST NOT read a runtime `DOMO_HOME` variable.
+
+Before slice 1, the installing agent MUST also create repo-root
+`install-report.json` and generate `<HOME>/install-dashboard.html`. The dashboard
+is a static display-only file, not a shipped server and not an orchestrator. It
+MUST be regenerated from `install-report.json` as steps complete and MUST include:
+
+- a step list with live statuses from `install-report.json`;
+- copy-paste blocks for the generated Claude login command, the full
+  `Plow Activate: <code>` string, and the send-to number;
+- no bearer token, Claude token, API key, password, or secret;
+- a meta-refresh tag so a browser reloads the regenerated file;
+- the `file://` URL surfaced to the user when a browser can open it.
+
+Dashboard generation, refresh, browser open, and `file://` surfacing are soft
+gates. If any dashboard step fails or no browser is available, the install MUST
+continue through terminal/chat fallback and `install-report.json` remains the
+canonical progress record.
+
+First, the external Plow API contract SEED is cloned, audited, and verified. It
+is the single declaring site for the Plow API surface consumed by Domo:
+
+- [seed-plow-chat](https://github.com/plow-pbc/seed-plow-chat) - Plow Chat API
+  contract.
+
+Then the composed slices are installed leaves-first in this order:
+
+1. [Purpose](seeds/claude-instance/SEED.md#purpose)
+2. [Purpose](seeds/calendar-connector/SEED.md#purpose)
+3. [Purpose](seeds/plow-channel-server/SEED.md#purpose)
+4. [Purpose](seeds/plow-activation/SEED.md#purpose)
+5. [Purpose](seeds/domo-runtime/SEED.md#purpose)
 
 ## Objects
 
-- **The installing agent** - the agent executing this SEED install action. It
-  runs shell commands, relays user actions in chat, polls piece status, and keeps
-  `DOMO_HOME=$HOME/.domo` threaded through every step.
-- **The user** - the human installing Domo. The user performs only the human
-  auth and texting steps: complete Claude login when asked, connect Google
-  Calendar if needed, choose solo or group mode, and text the Plow activation or
-  member verification messages.
-- **`DOMO_HOME`** - the dedicated persistent Domo home for the install:
-  `$HOME/.domo`. The agent MUST set and use exactly `DOMO_HOME=$HOME/.domo` for
-  every piece command. The agent MUST NOT use the SEED checkout, any path inside
-  the SEED checkout, or a temp directory as `DOMO_HOME`. The isolated Claude
-  config is `$DOMO_HOME/.claude`.
-- **Login piece** - `ref/domo-login-piece.sh`. It owns isolated Claude
-  subscription login detection.
-- **Calendar piece** - `ref/domo-calendar-piece.sh`. It owns the Google Calendar
-  connector probe.
-- **Activation piece** - `ref/domo-activate-piece.sh`. It owns solo and group
-  Plow activation and writes the Plow channel state.
-- **Ready piece** - `ref/domo-ready-piece.sh`. It owns default Domo config,
-  daemon startup, and the first outbound ready text.
-- **Plow channel state** - `$DOMO_HOME/.claude/plow-chat/state.json`, written by
-  the activation piece with chmod 600 and shape `{base_url, token, chat_uid}`.
-  The token MUST never be printed, logged, committed, or passed in argv.
-- **The Domo workspace** - `$DOMO_HOME/workspace`, authored by the ready piece
-  with a lean default `CLAUDE.md` for a solo or group household texting
-  assistant with Calendar access.
-- **The Plow Chat channel** - `ref/channels/plow-chat`, an MCP stdio server with
-  the `claude/channel` capability. It reads `PLOW_CHAT_STATE`; it MUST NOT
-  hardcode secrets and MUST NOT log the Bearer token.
-- **The install dashboard** - `ref/installer/`, a display-only local monitor
-  served from `127.0.0.1`. The dashboard is a soft gate and a user-facing status
-  surface only: it has no forms, accepts no install input from the user, and MUST
-  NOT drive orchestration. The installing agent owns all dashboard state updates
-  through `ref/installer/client.sh`. The dashboard state MUST NOT contain
-  secrets; it MAY show public user-action data such as the login command,
-  Calendar connector URL, Plow activation message, and Plow target number.
+- **Installing agent** - the agent executing this SEED. It resolves the baked
+  home, creates `install-report.json`, generates the static install dashboard,
+  installs slices leaves-first, records evidence, and surfaces user actions.
+- **User** - the human installer. The user completes Claude login, connects
+  Google Calendar if needed, texts the surfaced Plow activation or member
+  verification messages, and confirms the final Domo reply.
+- **Baked Domo home** - the absolute install home selected before slice
+  generation. User installs default to `$HOME/.domo`. Generated files contain
+  this path as a literal.
+- **`install-report.json`** - the repo-root progress and evidence record for the
+  current install. It records each dependency and slice status, terminal failures,
+  non-secret user-action values, and union Verification evidence.
+- **Install dashboard** - `<HOME>/install-dashboard.html`, generated at install
+  time from `install-report.json`. It is display-only, meta-refreshed, and may
+  show only non-secret copy-paste values.
+- **Claude instance slice** - `seeds/claude-instance/SEED.md`, owner of isolated
+  Claude subscription auth, first-run prompt immunity, metered-key-unset launch
+  discipline, and logout helper.
+- **Calendar connector slice** - `seeds/calendar-connector/SEED.md`, owner of the
+  real Google Calendar connector probe and strict transcript parser.
+- **Plow channel server slice** - `seeds/plow-channel-server/SEED.md`, owner of
+  the generated MCP channel server, `claude/channel` capability, `reply` tool,
+  inbound notification delivery, WebSocket liveness, and token-redaction
+  discipline for its surface.
+- **Plow activation slice** - `seeds/plow-activation/SEED.md`, owner of
+  solo/group election, Plow activation helpers, local Plow state, install state,
+  and server-side chat teardown usage.
+- **Domo runtime slice** - `seeds/domo-runtime/SEED.md`, owner of workspace
+  authoring, channel registration, pinned-session daemon startup, readiness
+  gating, the first ready text, operator CLI, status/logs/stop/doctor, and reset
+  delegation.
+- **Plow channel state** - `<HOME>/.claude/plow-chat/state.json`, chmod 600,
+  exactly `{base_url, token, chat_uid}`. The token MUST never be printed, logged,
+  committed, surfaced in the dashboard, or passed in argv.
+- **Domo workspace** - `<HOME>/workspace`, authored by the generated runtime with
+  solo or group household instructions and Calendar access.
+- **Operator CLI** - `<HOME>/bin/domo`, the generated user entrypoint containing
+  only baked dispatch paths.
 
 ## Actions
 
 ### Domo is installed
 
-This action installs the Domo slice. The installing agent MUST run the four
-verified pieces below in order against `DOMO_HOME=$HOME/.domo`. The agent MUST
-NOT reimplement piece internals.
-
-Before starting, the agent sets the fixed install home and shows it:
-
-```bash
-export DOMO_HOME="$HOME/.domo"
-```
-
-All commands below MUST use that same `DOMO_HOME`. The agent MUST NOT substitute
-the SEED repo path or a temp directory.
-
-**Phase 0 - Display-only dashboard.**
-
-The agent SHOULD launch the dashboard when a browser is available. This is a
-soft gate: if the server, browser, or open command is unavailable, the install
-continues in the agent chat and terminal with the same piece commands.
-Every dashboard command is best-effort. The agent MUST treat any dashboard
-launch, URL lookup, browser open, or state push failure as non-fatal, ignore that
-dashboard failure for install control flow, and continue with the terminal/chat
-fallback.
-
-The dashboard is the user's primary simple progress monitor and copy-paste
-surface. It is display-only; the user does not click dashboard controls to drive
-install progress. The user acts in their terminal, browser, and phone.
-
-The agent initializes one dashboard state directory scoped to `DOMO_HOME`:
-
-```bash
-export INSTALLER_STATE_DIR="$DOMO_HOME/installer-ui"
-INSTALLER_NO_OPEN=1 ref/installer/start.sh || true
-ref/installer/client.sh installer_reset "Setting up Domo" || true
-ref/installer/client.sh installer_set subtitle "Follow the current action below. This page updates automatically." || true
-ref/installer/client.sh installer_step login pending "Sign in to Claude" || true
-ref/installer/client.sh installer_step calendar pending "Connect Google Calendar" || true
-ref/installer/client.sh installer_step activate pending "Activate Domo by text" || true
-ref/installer/client.sh installer_step ready pending "Start Domo" || true
-```
-
-If a browser can be opened, the agent opens the local dashboard URL:
-
-```bash
-url="$(ref/installer/client.sh installer_url 2>/dev/null)" && open "$url" || true
-```
-
-If no browser is available, the agent prints the same progress in terminal/chat
-and continues. The dashboard server is a monitor only; failure to launch or
-update it MUST NOT block the four verified pieces.
-
-**Step 1 - Login.**
-
-Who runs what:
-
-- The agent pushes the login step as `waiting`; this is the dashboard's
-  "Watching" state. The agent MUST NOT push this state until it is ready to
-  start the blocking wait below:
-
-  ```bash
-  ref/installer/client.sh installer_step login waiting "Sign in to Claude" terminal "DOMO_HOME=$HOME/.domo ref/domo-login-piece.sh login" || true
-  ```
-
-- The agent tells the user to run this command in their own terminal:
-
-  ```bash
-  DOMO_HOME=$HOME/.domo ref/domo-login-piece.sh login
-  ```
-
-- The user completes the browser-based Claude subscription login.
-- After relaying the login command, the agent runs the blocking login wait while
-  the dashboard remains in the `waiting` state. The wait polls until the isolated
-  Claude subscription auth is confirmed:
-
-  ```bash
-  DOMO_HOME=$HOME/.domo ref/domo-login-piece.sh wait
-  ```
-
-Done when the wait command exits 0 after reporting `CONFIRMED`. If it times out
-or exits nonzero, the agent surfaces the failure. The agent MUST NOT ask for,
-print, or copy Claude auth tokens.
-
-When the blocking wait exits 0:
-
-```bash
-ref/installer/client.sh installer_step login ok "Signed in to Claude" || true
-```
-
-**Step 2 - Calendar.**
-
-Who runs what:
-
-- The agent pushes the Calendar step as `waiting`; this is the dashboard's
-  "Watching" state. The agent MUST NOT push this state until it is ready to
-  start the blocking wait below:
-
-  ```bash
-  ref/installer/client.sh installer_step calendar waiting "Connect Google Calendar" browser "https://claude.ai/customize/connectors" || true
-  ```
-
-- The agent tells the user to connect Google Calendar for the same Anthropic
-  account at:
-
-  ```text
-  https://claude.ai/customize/connectors
-  ```
-
-- After relaying the connector action, the agent runs the blocking Calendar wait
-  while the dashboard remains in the `waiting` state. The wait repeatedly probes
-  the connector until it is confirmed:
-
-  ```bash
-  DOMO_HOME=$HOME/.domo ref/domo-calendar-piece.sh wait
-  ```
-
-Done when the wait command exits 0 after reporting `CONNECTED`. The agent MUST
-NOT wait for the user to say the connector is done and MUST NOT mark Calendar
-complete from user assertion alone.
-
-When the blocking wait exits 0:
-
-```bash
-ref/installer/client.sh installer_step calendar ok "Google Calendar connected" || true
-ref/installer/client.sh installer_step activate active "Preparing text activation" || true
-```
-
-**Step 3 - Plow activation.**
-
-Before running the activation piece, the agent asks the user whether this Domo is
-for a solo chat or a group chat. Solo is the default. For group mode, the agent
-also asks for the household member display names and MUST include the installer
-as one member. The agent passes the mode to the activation piece; it MUST NOT
-edit Plow state by hand.
-
-Who runs what:
-
-- For solo, the agent starts real activation:
-
-  ```bash
-  DOMO_HOME=$HOME/.domo ref/domo-activate-piece.sh activate
-  ```
-
-- For group, the agent starts real activation with one or more member names:
-
-  ```bash
-  DOMO_HOME=$HOME/.domo ref/domo-activate-piece.sh activate --group "You" "Pat"
-  ```
-
-- The activation piece prints the full activation message and target number.
-- For solo, the agent relays them to the user in chat in this form:
-
-  ```text
-  Text "Plow Activate: CODE" to NUMBER from the phone Domo should use.
-  ```
-
-- For group, the installer first texts the owner activation message. The piece
-  then creates the group chat, prints one `VERIFY-XXXXXX` code per member, and
-  the agent relays each member's own code and target number. Each member sends
-  exactly their own verification code from their own phone.
-- The activation piece continues polling Plow until redeem returns verified and
-  then, for group mode, listens on Plow WSS until all members verify and
-  `chat_active` arrives. It writes:
-
-  ```text
-  $DOMO_HOME/.claude/plow-chat/state.json
-  ```
-
-Done when the activation piece reports `VERIFIED` for solo or `VERIFIED_GROUP`
-for group and the state file is present, chmod 600, and strictly shaped as
-`{base_url, token, chat_uid}`. The agent MUST never print the token.
-
-Dashboard updates:
-
-While requesting activation:
-
-```bash
-ref/installer/client.sh installer_step activate active "Preparing text activation" || true
-```
-
-After the activation piece receives `MESSAGE` and `NUMBER` from Plow, it prints
-them in terminal and best-effort pushes the same public copy-paste data to the
-dashboard. `MESSAGE` is the full exact text to send, not the bare display code:
-
-```bash
-ref/installer/client.sh installer_step activate waiting "Text the activation message" || true
-ref/installer/client.sh installer_verify "You" pending "MESSAGE" "NUMBER" self || true
-```
-
-For group mode, the activation piece also best-effort pushes one verification
-row per member with that member's display name, `VERIFY-XXXXXX` code, and target
-number. Each row flips to verified as the WSS `participant_verified` frame
-arrives; the activation step becomes ok when `chat_active` arrives.
-
-The dashboard MUST NOT receive activation secrets or the Plow Bearer token. It
-MAY receive only the public one-time activation message and target number that
-the user must text.
-
-When verified:
-
-```bash
-ref/installer/client.sh installer_verify "You" verified "" "" self || true
-ref/installer/client.sh installer_step activate ok "Text line activated" || true
-ref/installer/client.sh installer_step ready active "Starting Domo" || true
-```
-
-**Step 4 - Ready.**
-
-Who runs what:
-
-- The agent runs:
-
-  ```bash
-  DOMO_HOME=$HOME/.domo ref/domo-ready-piece.sh ready
-  ```
-
-The ready piece authors the default solo or group Domo config based on
-`$DOMO_HOME/install-state.json`, registers the Plow chat channel, starts the
-background Claude daemon, and sends the deterministic first ready text through
-the real Plow `reply` path to the activated chat.
-
-Done when the ready piece reports the ready text was sent. The user should then
-receive Domo's first text on the phone used in Step 3.
-
-Dashboard updates:
-
-Before running the ready piece:
-
-```bash
-ref/installer/client.sh installer_step ready active "Starting Domo" || true
-```
-
-When the ready text is sent:
-
-```bash
-ref/installer/client.sh installer_step ready ok "Domo is running" || true
-ref/installer/client.sh installer_done "Domo is live - check your phone for the ready text." || true
-```
+1. Resolve the baked Domo home to a concrete absolute path before recursing into
+   slices. Carry this value as install context for every slice generation.
+2. Initialize repo-root `install-report.json` with pending records for the Plow
+   contract, all five slices, dashboard generation, and root union Verification.
+3. Generate `<HOME>/install-dashboard.html` from `install-report.json` before
+   slice 1. Surface its `file://` URL when possible. Treat all dashboard failures
+   as non-fatal and continue with terminal/chat fallback.
+4. Clone, audit, and verify `https://github.com/plow-pbc/seed-plow-chat`. Record
+   the clone path and commit in `install-report.json`.
+5. Install the five sub-SEEDs in the order listed in `## Dependencies`. Each
+   slice receives the same baked home. Each slice owns its own generation,
+   regenerate-once policy, Verification, and terminal failure recording.
+6. If a sub-SEED reaches terminal `failure`, stop the install walk. Do not
+   regenerate from the root. Keep the partial state and failure reason visible in
+   `install-report.json` and the generated dashboard if available.
+7. After all slices pass, run this root's union Verification against the just
+   generated instance. The root union is non-regenerating.
 
 ### Domo is activated
 
-Solo and group activation are owned by:
-
-```bash
-DOMO_HOME=$HOME/.domo ref/domo-activate-piece.sh activate
-```
-
-Solo performs:
-
-1. `POST /v1/auth/activate` with `{"name":"Domo","provision_chat":true}`.
-2. User texts the displayed full message (`Plow Activate: <display_code>`) to the
-   displayed number.
-3. Poll `POST /v1/auth/activate/redeem` until `status=verified`.
-4. Write chmod-600 `{base_url, token, chat_uid}` state.
-
-Group is invoked with:
-
-```bash
-DOMO_HOME=$HOME/.domo ref/domo-activate-piece.sh activate --group "You" "Pat"
-```
-
-It performs:
-
-1. `POST /v1/auth/activate` without `provision_chat`.
-2. Installer texts the displayed full owner activation message.
-3. Poll `POST /v1/auth/activate/redeem` until `status=verified`.
-4. `GET /v1/lines`.
-5. `POST /v1/chats` with one agent participant and one member participant per
-   supplied display name.
-6. Persist each one-time member `verification_code` immediately in chmod-600
-   `install-state.json` activation detail and surface it to that member.
-7. Listen on Plow WSS for `participant_verified` frames and `chat_active`.
-8. Write chmod-600 `{base_url, token, chat_uid}` state.
-
-Activation secrets MUST pass through stdin or chmod-600 files, never command
-arguments. Bearer tokens MUST be written chmod 600, never logged, never printed,
-and never committed.
+Activation is delegated to the generated Plow activation slice. The installing
+agent relays only non-secret text instructions: the full
+`Plow Activate: <code>` string, the send-to number, and any member `VERIFY-`
+codes. The root MUST NOT duplicate solo/group election logic, edit Plow state by
+hand, or surface the bearer token.
 
 ### Domo runs
 
-Runtime startup is owned by:
+Runtime startup is delegated to `<HOME>/bin/domo ready`. The generated runtime
+authors the workspace, registers the Plow chat channel, starts Claude on the
+pinned session, accepts readiness only from the host MCP log registration line
+for that session, and sends the first ready text through the channel `reply` tool
+after readiness.
 
-```bash
-DOMO_HOME=$HOME/.domo ref/domo-ready-piece.sh ready
-```
+### Domo replies and reads the calendar
 
-The ready piece writes a lean default Domo config for the solo or group
-household, starts the Claude Code daemon with the Plow chat channel loaded, and
-sends the first ready text through the channel `reply` tool.
-`ref/domo-ready-piece.sh status` prints non-secret readiness state.
-`ref/domo-ready-piece.sh stop` stops the daemon and sweeps the channel child.
+User-visible replies MUST go through the Plow channel `reply` tool. Calendar
+access MUST go through the claude.ai Google Calendar connector tools. Status,
+logs, dashboard text, install evidence, and committed files MUST NOT contain the
+Plow bearer token, activation secrets, Claude auth tokens, or metered API keys.
 
-### Domo replies / reads the calendar / reports activity
+## Verification
 
-User-visible replies MUST go through the Plow channel `reply` tool; transcript
-output alone does not reach the chat. Calendar access MUST go through the
-`mcp__claude_ai_Google_Calendar__*` connector tools. Logs and status output MUST
-not contain the Plow Bearer token, activation secrets, or any metered API key.
+Verification runs against the instance just produced by the install walk. It is
+the live-operator union of the slice Verifications plus structural checks; it
+MUST NOT regenerate slices or build a second instance.
 
-## Verify
-
-Verification is split by when a check can pass.
-
-**Structural checks** hold on a fresh clone:
-
-1. `README.md` contains a `## Purpose` H2 outside fenced code blocks.
-2. Root `SEED.md` has exactly one `# Purpose`, follows the canonical H2 grammar,
-   and includes `## Normative Language`.
-3. Every `SEED.md` links its `# Purpose` body to the closest
-   sibling-or-ancestor `README.md#purpose`.
-
-The deterministic structural subset is implemented by:
-
-```bash
-bash ref/verify.sh
-```
-
-**Piece checks** hold when dependencies are present:
-
-1. Login piece status confirms subscription auth:
+1. Structural conformance passes:
 
    ```bash
-   DOMO_HOME=$HOME/.domo ref/domo-login-piece.sh status
+   bash ref/verify.sh
    ```
 
-2. Calendar piece confirms the connector:
+   The repo's shipped `ref/` directory contains exactly `verify.sh` and no old
+   product scripts, installer SPA/server, channel server, bin helper, harness, or
+   test double.
 
-   ```bash
-   DOMO_HOME=$HOME/.domo ref/domo-calendar-piece.sh check
-   ```
+2. `install-report.json` exists at the repo root, not under `<HOME>`, and records
+   non-secret statuses for the Plow contract, all five slices, dashboard
+   generation, and root union Verification.
 
-3. Activation piece validates Plow activation mechanics against the stub:
+3. `<HOME>/install-dashboard.html` exists when the soft gate can generate it. It
+   reflects the statuses in `install-report.json`, contains a meta-refresh tag,
+   contains the copy-paste login command, contains the full `Plow Activate:
+   <code>` string and send-to number when activation is waiting, and contains no
+   token, password, API key, bearer value, or secret-looking credential. If the
+   dashboard could not be generated or opened, `install-report.json` records the
+   non-fatal fallback and the same copy-paste values are surfaced in
+   terminal/chat.
 
-   ```bash
-   ref/domo-activate-piece.sh selftest
-   ref/domo-activate-piece.sh group-selftest
-   ```
+4. Claude instance seam: the generated isolated config is logged in with
+   `rc == 0`, `loggedIn == true`, `authMethod == "claude.ai"`, and
+   `apiProvider == "firstParty"`; generated Claude launch paths unset
+   `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN`; first-run immunity config
+   is present and private.
 
-4. Ready piece validates config, channel connect, and first ready text against
-   the stub:
+5. Calendar seam: the generated Calendar check reports `CONNECTED` only from a
+   real strict `tool_use` to matching `tool_result` `tool_use_id` pair for the
+   Google Calendar connector, and a text-only transcript remains `PENDING`.
 
-   ```bash
-   ref/domo-ready-piece.sh selftest
-   ```
+6. Plow channel seam: the generated MCP channel server is installed where
+   `domo-runtime` consumes it, secret state is chmod 600, the real generated
+   operator starts and stays green through `status --assert`, a real `reply`
+   lands in the Plow chat with `status == "sent"`, and token hygiene is clean.
 
-**Runtime checks** hold only after the install action completes:
+7. Plow activation seam: activation surfaces the full `Plow Activate: <code>`
+   string and send-to number, a bare code does not verify, group mode verifies
+   owner and members without rotating preserved codes on restart, activation
+   writes strict chmod-600 `{base_url, token, chat_uid}` state, and cleanup invokes
+   the contract's server-side chat teardown.
 
-1. The isolated Domo home is signed in to Claude subscription auth with
-   `ANTHROPIC_API_KEY` unset.
-2. Google Calendar is confirmed from inside that same isolated account.
-3. Plow state exists at `$DOMO_HOME/.claude/plow-chat/state.json`, is chmod 600,
-   and contains exactly `{base_url, token, chat_uid}`.
-4. The ready piece has started the daemon and sent the first ready text to the
-   activated phone.
+8. Runtime seam: `<HOME>/bin/domo` contains only baked dispatch paths; readiness
+   is accepted only after a post-snapshot host MCP log line proves
+   `Channel notifications registered` for the pinned session; the first ready
+   text is sent only after readiness; `status` and `doctor` are green and
+   non-secret; `reset` delegates to the generated Plow cleanup and Claude logout
+   helpers instead of re-implementing either.
+
+9. End-to-end operator check: Domo texts the activated phone with the ready text,
+   receives one inbound user message, and sends a user-visible reply through the
+   Plow `reply` tool. This is the final live user-install E2E.
 
 ## Feedback
 
 (none)
 
-## Open
+## Open Items
 
 - **Morning briefing trigger** - a scheduled morning message so Domo can
   proactively brief the household. Deferred.
 - **Reboot survival** - a launchd job so the daemon survives a host reboot.
   Deferred.
 - **Domo-specific authorization policy** - a future policy layer can narrow what
-  verified chat members may ask Domo to do. The current solo install trusts the
-  verified phone.
+  verified chat members may ask Domo to do. The current install trusts verified
+  chat participants.
 
 ## Non-Goals
 

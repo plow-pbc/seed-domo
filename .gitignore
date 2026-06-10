@@ -32,13 +32,6 @@
 # Domo install state contains household interview answers and later install secrets.
 /install-state.json
 
-# Channel build artifacts (the bun server installs deps at launch).
-/ref/channels/plow-chat/node_modules/
-/ref/channels/plow-chat/bun.lock
-
-# Install-dashboard build artifacts (no deps today; defensive).
-/ref/installer/node_modules/
-
 .DS_Store
 
 # Stray output of the `script` PTY recorder (start uses /dev/null, but belt-and-suspenders)

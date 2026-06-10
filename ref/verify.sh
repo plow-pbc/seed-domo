@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Deterministic implementation of the SEED ## Verify section's three
+# Deterministic implementation of the SEED ## Verification section's three
 # STRUCTURAL prompts (README ## Purpose; root SEED.md one-H1 + canonical
 # H2 grammar; tree-wide SEED.md conformance).
 #
-# The natural-language prompts in SEED.md's ## Verify section are the
+# The natural-language prompts in SEED.md's ## Verification section are the
 # normative source; this script runs the same structural checks as bash so
 # CI and non-AI callers (and the Review phase) have a deterministic exit
-# code. The runtime Verify prompts (tooling present, subscription sign-in,
+# code. The runtime Verification prompts (tooling present, subscription sign-in,
 # calendar connector, daemon resume) are NOT covered here — they need a
-# live machine; `ref/domo doctor` / `ref/domo status` cover those.
+# live machine and are covered by install rehearsal evidence.
 #
 # Usage:   bash ref/verify.sh [TARGET_DIR]
 #   TARGET_DIR defaults to "." (run from the repo root: `bash ref/verify.sh`).
@@ -59,11 +59,11 @@ nonblank_count() { grep -c . || true; }
 # Canonical top-level H2 grammar (pipe-separated so it survives `awk -v`
 # across awk variants — BSD awk rejects multi-line -v values). This MUST
 # match SEED.md's "Canonical H2 grammar":
-#   required, in order:  Dependencies -> Objects -> Actions -> Verify
+#   required, in order:  Dependencies -> Objects -> Actions -> Verification
 #   the root SEED.md additionally MUST start with Normative Language
-#   optional, in order, after Verify:  Feedback -> Open -> Non-Goals
+#   optional, in order, after Verification:  Feedback -> Open Items -> Non-Goals
 #   any other top-level H2 is non-conforming.
-CANONICAL='## Normative Language|## Dependencies|## Objects|## Actions|## Verify|## Feedback|## Open|## Non-Goals'
+CANONICAL='## Normative Language|## Dependencies|## Objects|## Actions|## Verification|## Feedback|## Open Items|## Non-Goals'
 
 # ---------------------------------------------------------------------------
 # Structural validation of one SEED.md ($1). $2 is "root" for the repo-root
@@ -135,9 +135,9 @@ check_seed() {
 
   # --- the four required H2s, present and in order ---
   if ! printf '%s\n' "$h2" \
-        | grep -E '^## (Dependencies|Objects|Actions|Verify)$' \
-        | diff - <(printf '## Dependencies\n## Objects\n## Actions\n## Verify\n') >/dev/null 2>&1; then
-    echo "  - $f: required H2s (Dependencies, Objects, Actions, Verify) missing or out of order"
+        | grep -E '^## (Dependencies|Objects|Actions|Verification)$' \
+        | diff - <(printf '## Dependencies\n## Objects\n## Actions\n## Verification\n') >/dev/null 2>&1; then
+    echo "  - $f: required H2s (Dependencies, Objects, Actions, Verification) missing or out of order"
     rc=1
   fi
 
