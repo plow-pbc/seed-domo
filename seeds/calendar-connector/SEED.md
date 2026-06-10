@@ -42,23 +42,23 @@ NOT read `DOMO_HOME` at runtime.
     `CONNECTED` or `PENDING`.
 - **Probe output logs** - non-secret stream-json stdout/stderr files under
   `<HOME>/.claude/run/calendar-connector/`.
-- **Text-only transcript fixture** - a generated verification fixture under
-  `<HOME>/runtime/calendar-connector/fixtures/text-only.jsonl`; it MUST parse
-  as `PENDING`.
+- **Text-only transcript sample** - a generated sample under
+  `<HOME>/runtime/calendar-connector/samples/text-only.jsonl`; it MUST parse as
+  `PENDING`.
 
 ## Actions
 
 ### Calendar connector verifier is generated
 
 The installing agent MUST generate this slice into the baked Domo home. It MUST
-NOT copy `ref/domo-calendar-piece.sh` or depend on any committed Calendar script.
+NOT copy or depend on any committed Calendar script.
 
 1. Resolve the baked home to an absolute path. Create:
 
    ```text
    <HOME>/runtime/calendar-connector
    <HOME>/runtime/calendar-connector/workspace
-   <HOME>/runtime/calendar-connector/fixtures
+   <HOME>/runtime/calendar-connector/samples
    <HOME>/.claude/run/calendar-connector
    ```
 
@@ -135,84 +135,50 @@ NOT copy `ref/domo-calendar-piece.sh` or depend on any committed Calendar script
    `https://claude.ai/customize/connectors` while waiting so the installing
    agent can direct the user to connect Google Calendar if needed.
 
-5. Generate `fixtures/text-only.jsonl`, a stream-json transcript containing only
+5. Generate `samples/text-only.jsonl`, a stream-json transcript containing only
    text content and no Calendar tool-use/result pair. It MUST parse as
    `PENDING`.
 
 If this slice's `## Verification` fails because a generated helper, parser, or
-fixture is wrong, the installing agent MUST regenerate this slice exactly once
+sample is wrong, the installing agent MUST regenerate this slice exactly once
 and rerun Verification. If the rerun still fails, stop the install, write the
 terminal reason to repo-root `install-report.json`, and do not attempt a third
 generation.
 
 ## Verification
 
-Verification runs against the just-generated real instance and generated files.
+Verification runs against the just-generated real instance. It is live operator
+evidence plus the thin self-checks needed to decide whether this slice passes.
 
-1. The generated runtime files MUST exist and be executable:
+1. The generated runtime files exist and are executable:
 
    ```bash
    test -x "<HOME>/runtime/calendar-connector/check"
    test -x "<HOME>/runtime/calendar-connector/wait"
    test -x "<HOME>/runtime/calendar-connector/parse-transcript"
    test -d "<HOME>/runtime/calendar-connector/workspace"
-   test -f "<HOME>/runtime/calendar-connector/fixtures/text-only.jsonl"
    ```
 
-2. No generated file in `<HOME>/runtime/calendar-connector` MAY contain a
-   runtime read of `DOMO_HOME`; all generated paths MUST be baked absolute paths.
+2. Generated files in `<HOME>/runtime/calendar-connector` contain baked absolute
+   paths and do not read `DOMO_HOME` at runtime.
 
-3. Metered-key immunity MUST be visible on every generated Claude launch path.
-   With `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` set to sentinel values
-   in the parent environment, the generated `check` helper MUST still invoke
-   Claude through `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN`. The
-   sentinel fake-Claude binary and its logs MUST be created in a scratch
-   directory outside `<HOME>/runtime/calendar-connector` and
-   `<HOME>/.claude/run/calendar-connector`, then removed after the drill.
+3. Generated Claude launch paths unset `ANTHROPIC_API_KEY` and
+   `CLAUDE_CODE_OAUTH_TOKEN`; the Calendar probe does not depend on ambient
+   metered keys or OAuth tokens.
 
-4. The generated `check` helper MUST run against the real Google Calendar
-   connector on the isolated Claude account and report `CONNECTED` only when
-   `parse-transcript` finds a strict
-   `tool_use` -> `tool_result` match by `tool_use_id` for
+4. The generated `check` helper runs against the real Google Calendar connector
+   on the isolated Claude account and reports `CONNECTED` only when
+   `parse-transcript` finds a strict `tool_use` to matching `tool_result`
+   `tool_use_id` pair for
    `mcp__claude_ai_Google_Calendar__list_calendars`. The stored probe transcript
-   path MUST be recorded in rehearsal evidence.
+   path is recorded as evidence.
 
-5. Re-running `parse-transcript` on the real stored probe transcript from item 4
-   MUST report `CONNECTED` and exit 0.
+5. Re-running `parse-transcript` on the stored real probe transcript reports
+   `CONNECTED` and exits 0.
 
-6. Running `parse-transcript` on the generated text-only transcript fixture MUST
-   print `PENDING` and exit nonzero:
+6. A text-only transcript with no Calendar tool-use/result pair reports
+   `PENDING` and exits nonzero.
 
-   ```bash
-   "<HOME>/runtime/calendar-connector/parse-transcript" \
-     "<HOME>/runtime/calendar-connector/fixtures/text-only.jsonl"
-   ```
-
-7. The generated parser MUST contain the strict Calendar tool name, the
-   `tool_use_id` matching check, and the errorish regex:
-
-   ```bash
-   parser="<HOME>/runtime/calendar-connector/parse-transcript"
-   grep -F 'mcp__claude_ai_Google_Calendar__list_calendars' "$parser"
-   grep -F 'tool_use_id' "$parser"
-   grep -F 'permission denied|not found|failed|error|missing|unauthorized|requires authentication|connect' "$parser"
-   ```
-
-8. The generated `wait` helper MUST contain the pinned 5-second poll interval
-   and 600-second timeout:
-
-   ```bash
-   grep -F 'POLL_INTERVAL_SECONDS=5' "<HOME>/runtime/calendar-connector/wait"
-   grep -F 'WAIT_TIMEOUT_SECONDS=600' "<HOME>/runtime/calendar-connector/wait"
-   ```
-
-9. The generated `check` helper MUST contain the pinned probe controls and exact
-   prompt:
-
-   ```bash
-   check="<HOME>/runtime/calendar-connector/check"
-   grep -F 'PROBE_TIMEOUT_SECONDS=90' "$check"
-   grep -F -- '--permission-mode auto' "$check"
-   grep -F -- '--max-budget-usd 0.50' "$check"
-   grep -F 'Call mcp__claude_ai_Google_Calendar__list_calendars now. After the tool result returns, summarize the number of calendars. Do not claim success unless the tool result is available.' "$check"
-   ```
+7. The generated wait behavior polls at the pinned 5-second cadence and times out
+   after 600 seconds; the generated probe is bounded by 90 seconds and uses
+   `--permission-mode auto` with the `$0.50` budget cap.

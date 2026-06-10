@@ -11,22 +11,22 @@ Hard dependencies:
 
 - **Plow Chat contract SEED** - the installing agent MUST clone
   `https://github.com/plow-pbc/seed-plow-chat` from `origin/main` before
-  generation, verify `git rev-parse HEAD` is
-  `b4656d9d2fda82c9525dadc186834003b996055c`, and read that SEED's
+  generation, verify the clone contains baseline commit
+  `fe24c9a53af1c9aeea5511cc6c1a797a2b770296` in its history, record the actual
+  `git rev-parse HEAD`, and read that SEED's
   `## Objects` and `## Actions` as the only Plow HTTP and WebSocket API
   surface. This Domo SEED MUST NOT restate Plow endpoints, payload schemas,
   response schemas, or frame schemas.
 - **Plow activation slice** - `<HOME>/.claude/plow-chat/state.json` MUST be
   written by `seeds/plow-activation/SEED.md` before live Verification can prove
-  outbound sends, WebSocket connection, backfill, and DTU-driven inbound
-  delivery.
+  outbound sends, WebSocket connection, backfill, and inbound delivery.
 - **`bun`** - the generated MCP registration launches the channel server with
   Bun.
 
 The installing agent MUST resolve the Domo home once before generation,
 defaulting to `$HOME/.domo` for user installs. Generated runtime files MUST
-embed that literal path and MUST NOT read `DOMO_HOME`, `PLOW_CHAT_STATE`, or
-`PLOW_CHAT_CONNECTED_MARKER` at runtime.
+embed that literal path and MUST NOT read `DOMO_HOME` or runtime state-path
+environment variables.
 
 ## Objects
 
@@ -60,8 +60,8 @@ embed that literal path and MUST NOT read `DOMO_HOME`, `PLOW_CHAT_STATE`, or
 ### Plow channel server is generated
 
 The installing agent MUST generate this slice into the baked Domo home. It MUST
-NOT copy `ref/channels/plow-chat`, vendor a prewritten server, or depend on any
-committed channel implementation as the installed runtime.
+NOT vendor a prewritten server or depend on any committed channel implementation
+as the installed runtime.
 
 1. Clone `https://github.com/plow-pbc/seed-plow-chat` from `origin/main` into a
    scratch directory and read its `## Objects` and `## Actions` before writing
@@ -79,7 +79,7 @@ committed channel implementation as the installed runtime.
    registration metadata that invokes it. The generated server MUST contain the
    baked absolute `<HOME>` literal and MUST derive its state path, high-water
    mark path, and connected marker path from that literal. It MUST NOT read
-   `DOMO_HOME`, `PLOW_CHAT_STATE`, or `PLOW_CHAT_CONNECTED_MARKER`. Internal
+   `DOMO_HOME` or runtime state-path environment variables. Internal
    implementation shape is otherwise deliberately unconstrained: the generating
    agent MAY choose any filenames, module split, package metadata, or Bun launch
    wrapper that satisfies the externally consumed registration and behavioral
@@ -142,8 +142,8 @@ committed channel implementation as the installed runtime.
     at 2000 UIDs.
 12. First backfill after a fresh server start MUST seed the high-water mark
     without delivering historical messages. On daemon restart, historical
-    messages already in the chat MUST NOT be replayed to Claude; fresh DTU
-    inbound after restart MUST still be delivered.
+    messages already in the chat MUST NOT be replayed to Claude; a fresh inbound
+    message after restart MUST still be delivered.
 13. The generated supervisor MUST use these pinned timing values:
 
     ```text

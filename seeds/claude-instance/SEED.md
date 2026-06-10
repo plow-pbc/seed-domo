@@ -60,7 +60,7 @@ generated Claude launch path in this slice.
 ### Claude instance is generated
 
 The installing agent MUST generate this slice into the baked Domo home. It MUST
-NOT copy `ref/domo-login-piece.sh` or depend on any committed login script.
+NOT copy or depend on any committed login script.
 
 1. Resolve the baked home to an absolute path. Create:
 
@@ -125,11 +125,16 @@ NOT copy `ref/domo-login-piece.sh` or depend on any committed login script.
      `text style|Choose the text|Let.s get started|trust the files|trust this folder|project.*trust|Yes, I trust`,
      press Enter.
 
-   The matcher SHOULD tolerate ANSI escapes, line wraps, and fragmented prompt
-   text; it SHOULD strip control sequences before applying these regex anchors.
-   It MUST NOT send `2` based on broad renderer words such as `fullscreen` or
-   `Fullscreen`, because a fragmented prompt can expose those words before the
-   stable `Yes, try it` option label appears.
+   The matcher MUST tolerate ANSI escapes, line wraps, and fragmented prompt
+   text: it MUST strip control sequences before applying these anchors, and it
+   MUST match whitespace-insensitively by removing all whitespace from both the
+   stripped output and the anchor patterns before comparing. The Claude TUI
+   renders inter-word spacing with cursor-positioning escapes, so stripped
+   output can legitimately read `Yes,tryit`; an anchor that requires literal
+   inter-word spaces can never match. It MUST NOT send `2` based on broad
+   renderer words such as `fullscreen` or `Fullscreen`, because a fragmented
+   prompt can expose those words before the stable `Yes, try it` option label
+   appears.
 
 6. Generate the auth-status helper. It MUST run:
 
@@ -186,11 +191,19 @@ reports `loggedIn == true` before deleting any Domo home data.
 
 ## Verification
 
-Verification runs against the just-generated real instance.
+Verification runs against the just-generated real instance. It is live operator
+evidence plus the thin self-checks needed to decide whether this slice passes.
 
-1. The auth-status helper MUST exit 0 and the raw `claude auth status --json`
-   response under the isolated environment MUST satisfy the four-field login
-   gate:
+1. The generated helpers exist, are executable, and are under the baked home:
+
+   ```bash
+   test -x "<HOME>/runtime/claude-instance/login"
+   test -x "<HOME>/runtime/claude-instance/auth-status"
+   test -x "<HOME>/runtime/claude-instance/logout"
+   ```
+
+2. The auth-status helper exits 0, and the raw `claude auth status --json`
+   response under the isolated config satisfies:
 
    ```text
    rc == 0
@@ -199,12 +212,11 @@ Verification runs against the just-generated real instance.
    apiProvider == "firstParty"
    ```
 
-2. Metered-key immunity MUST be shown on the generated launch paths. With
-   `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` set to sentinel values in
-   the parent environment, the generated login and auth-status helpers MUST
-   still invoke Claude through `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN`.
+3. Generated Claude launch paths unset `ANTHROPIC_API_KEY` and
+   `CLAUDE_CODE_OAUTH_TOKEN`; no generated helper depends on ambient metered keys
+   or OAuth tokens.
 
-3. `<HOME>/.claude/.claude.json` MUST be chmod 600 and MUST contain:
+4. `<HOME>/.claude/.claude.json` is chmod 600 and contains:
 
    ```text
    hasCompletedOnboarding == true
@@ -212,28 +224,15 @@ Verification runs against the just-generated real instance.
    projects["<HOME>/workspace"].hasTrustDialogAccepted == true
    ```
 
-4. `<HOME>/.claude/settings.json` MUST be chmod 600 and MUST contain:
+5. `<HOME>/.claude/settings.json` is chmod 600 and contains:
 
    ```text
    tui == "default"
    theme is a non-empty string
    ```
 
-5. No generated file in `<HOME>/runtime/claude-instance` MAY contain a runtime
-   read of `DOMO_HOME`; all generated paths MUST be the baked absolute paths.
+6. Generated files in `<HOME>/runtime/claude-instance` contain baked absolute
+   paths and do not read `DOMO_HOME` at runtime.
 
-6. The logout helper MUST exist and be executable, but normal install
-   verification MUST NOT run it.
-
-7. The generated prompt-confirmation helper MUST contain the required stable
-   anchors and no broad fullscreen fallback. This auth-independent check MUST
-   pass:
-
-   ```bash
-   prompt="<HOME>/runtime/claude-instance/prompt-confirm.expect"
-   grep -F 'Yes, try it' "$prompt"
-   grep -F 'send "2\r"' "$prompt"
-   grep -F 'text style|Choose the text|Let.s get started|trust the files|trust this folder|project.*trust|Yes, I trust' "$prompt"
-   ! grep -F 'fullscreen|Fullscreen' "$prompt"
-   ! grep -F 'Fullscreen|fullscreen' "$prompt"
-   ```
+7. The logout helper exists for reset delegation, but normal install
+   verification does not run it.

@@ -91,7 +91,7 @@ Add `--raw` for the underlying PTY capture or `--no-follow` for a one-shot read.
 ## Security Posture
 
 - Domo uses Claude subscription auth. `ANTHROPIC_API_KEY` must stay unset, and
-  `ref/domo` unsets it on launch paths.
+  generated Claude launch paths unset it before invoking Claude.
 - The Plow Bearer token is user-wide. It is stored chmod 600 under the isolated
   `.claude/plow-chat` state dir, gitignored, never logged, never printed, and
   never committed.
