@@ -32,7 +32,7 @@ Hard dependencies:
 
 The installing agent MUST resolve the Domo home once before generation,
 defaulting to `$HOME/.domo` for user installs. Dev rehearsals use the stable
-auth'd home `~/.domo-rehearsal` only for auth-dependent full runtime checks.
+auth'd home only for auth-dependent full runtime checks.
 Generated runtime files MUST embed that literal path and MUST NOT read
 `DOMO_HOME` at runtime.
 

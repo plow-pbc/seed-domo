@@ -171,7 +171,10 @@ head-chef escalation decision explicitly authorizes it.
 
 Verification runs against the just-generated real instance. It is live operator
 evidence only, plus the thin self-checks needed to decide whether the
-regenerate-once policy has passed or failed.
+regenerate-once policy has passed or failed. Because this slice installs before
+`plow-activation` and `domo-runtime`, items that need `state.json` or the
+consuming operator path are collected once those slices are installed, and the
+root union Verification re-asserts them.
 
 1. The generated channel interface MUST exist where `domo-runtime` consumes it,
    and the secret-bearing channel state MUST be private:
