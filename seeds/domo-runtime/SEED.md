@@ -158,8 +158,12 @@ entrypoint.
      `install-state.json` - never any install answers file.
 
    - **Pinned block shape.** The generated `CLAUDE.md` MUST contain exactly one
-     `## Calendars` section. When `calendars.elected` is empty or absent, seed
-     the placeholder form:
+     `## Calendars` section. The version comment is always exactly
+     `<!-- domo:calendars v1 -->`. The election stamp lives INSIDE the
+     sentinels, as the first body line of an elected block - so every writer,
+     `author` or Domo editing only between the markers, can stamp without
+     touching anything outside them. When `calendars.elected` is empty or
+     absent, seed the placeholder form:
 
      ```markdown
      ## Calendars
@@ -170,38 +174,44 @@ entrypoint.
      <!-- domo:calendars:end -->
      ```
 
-     When `calendars.elected` is non-empty, seed the block already-elected: the
-     version comment carries the election stamp copied verbatim from
-     install-state, and the body is the fixed scope line plus one line per
-     elected calendar:
+     When `calendars.elected` is non-empty, seed the block already-elected:
+     the body is the stamp line copied verbatim from install-state's
+     `elected_at`, then the fixed scope line, then one line per elected
+     calendar:
 
      ```markdown
      ## Calendars
 
-     <!-- domo:calendars v1 elected_at=2026-06-10T18:00:00Z -->
+     <!-- domo:calendars v1 -->
      <!-- domo:calendars:start -->
+     elected_at: 2026-06-10T18:00:00Z
      Elected calendars — use ONLY these for calendar questions unless the user explicitly asks otherwise:
      - Personal — id: pat@example.com
      - Work — id: c_abc123@group.calendar.google.com
      <!-- domo:calendars:end -->
      ```
 
-     Placeholder blocks carry no `elected_at` stamp. `author` stamps from
-     install-state's `elected_at`; Domo stamps the current time when it writes
-     a conversational election or re-election.
+     Placeholder bodies carry no stamp line. `author` stamps from
+     install-state's `elected_at`; Domo writes its own current-time stamp line
+     when it records a fallback election or re-election. An elected body
+     SHOULD carry the stamp line; a stampless elected block is legacy - still
+     valid, preserved, and treated as oldest by the precedence rule below.
 
    - **Block-body shape is normative (this is an injection surface).** A
-     non-placeholder body between the sentinels MUST be exactly the fixed scope
-     line above followed by one line per elected calendar in the form
-     `- <name> — id: <id>`, and nothing else - no free text, no extra markdown,
-     no lines copied from user or calendar input. Calendar names are
-     third-party-controlled and, in group mode, SMS is member-controlled, so
-     before writing, the writer (installing agent or Domo) MUST sanitize each
-     name: strip newlines, control characters, and any markdown or HTML-comment
-     structure, and cap length at 80 characters. The id is taken verbatim from
-     `list_calendars`. Nothing from the conversation other than the chosen
-     name(s) reaches the block. `author` MUST store name AND id so later
-     calendar queries can target the right `calendarId`.
+     non-placeholder body between the sentinels MUST be exactly: the stamp
+     line `elected_at: <iso8601>` (SHOULD be present; absent only in legacy
+     blocks), then the fixed scope line above, then one line per elected
+     calendar in the form `- <name> — id: <id>`, and nothing else - no free
+     text, no extra markdown, no lines copied from user or calendar input.
+     Calendar names are third-party-controlled and, in group mode, SMS is
+     member-controlled, so before writing, the writer (installing agent or
+     Domo) MUST sanitize each name: strip newlines, control characters, any
+     markdown or HTML-comment structure, and the literal entry-line separator
+     sequence ` — id: ` (normalize it away so a hostile name cannot forge an
+     extra name/id boundary), and cap length at 80 characters. The id is taken
+     verbatim from `list_calendars`. Nothing from the conversation other than
+     the chosen name(s) reaches the block. `author` MUST store name AND id so
+     later calendar queries can target the right `calendarId`.
 
    - **Regeneration-preserve rule - a HOT path.** `author` re-runs on every
      routine bring-up (`<HOME>/bin/domo ready` re-authors workspace config each
@@ -213,17 +223,20 @@ entrypoint.
        `(not yet elected)` placeholder, `author` MUST copy that block verbatim
        into the regenerated file, subject to the precedence rule below.
        Before copying, `author` MUST validate the block shape (intact
-       sentinels; the fixed scope line; one `- <name> — id: <id>` line per
-       calendar). Validation is a MUST because it gates the quarantine path; a
-       violation is treated as malformed (below).
+       sentinels; an optional leading `elected_at: <iso8601>` stamp line; the
+       fixed scope line; one `- <name> — id: <id>` line per calendar).
+       Validation is a MUST because it gates the quarantine path; a violation
+       is treated as malformed (below).
      - **Precedence rule (which election wins):** an election made in this
        install's moment - `install-state.calendars.elected` non-empty AND its
-       `elected_at` newer than the existing block's stamp - OVERRIDES the
+       `elected_at` newer than the existing block's stamp line - OVERRIDES the
        existing block; otherwise the existing block wins, so a routine re-author
        against an unchanged install-state (older or equal stamp) keeps the
-       user's conversational re-elections. A stampless legacy non-placeholder
-       block is kept unless the install-state election was stamped by the
-       currently-running install.
+       user's conversational re-elections. A stampless elected block is
+       treated as OLDEST: any non-empty install-state election carrying an
+       `elected_at` overrides it; when install-state holds no election
+       (`calendars` absent or `elected` empty), the stampless elected block is
+       preserved.
      - **A placeholder never outranks an election:** if the existing block is
        the placeholder but `install-state.calendars.elected` is non-empty,
        treat the placeholder as absent and seed already-elected.
@@ -261,8 +274,10 @@ entrypoint.
        so, and record it - the user can change it anytime.
      - **Record:** on answer, rewrite only the text between the
        `domo:calendars:start` and `domo:calendars:end` markers (never the
-       markers themselves) to the pinned non-placeholder body shape above,
-       sanitizing each name, then confirm in one short text.
+       markers themselves, never anything outside them) to the pinned
+       non-placeholder body shape above, writing a fresh current-time
+       `elected_at: <iso8601>` stamp as its first line and sanitizing each
+       name, then confirm in one short text.
      - **Scope:** use only the elected calendars for calendar questions unless
        the user explicitly asks otherwise. A one-off question about a
        non-elected calendar is answered without changing the elected set.
@@ -517,11 +532,13 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
 
 9. On a fresh author with an `install-state.json` carrying non-empty
    `calendars.elected`, the generated `<HOME>/workspace/CLAUDE.md`
-   `## Calendars` block is seeded already-elected - the stamped version
-   comment, the fixed scope line, and one `- <name> — id: <id>` line per
-   entry. With `calendars.elected` empty or absent, it is seeded with the
-   `(not yet elected)` placeholder. Either way the
-   `domo:calendars:start`/`end` sentinels are present and intact.
+   `## Calendars` block is seeded already-elected - the
+   `elected_at: <iso8601>` stamp line (copied from install-state) as the
+   first body line inside the sentinels, then the fixed scope line, then one
+   `- <name> — id: <id>` line per entry. With `calendars.elected` empty or
+   absent, it is seeded with the `(not yet elected)` placeholder and no stamp
+   line. Either way the version comment is exactly `<!-- domo:calendars v1 -->`
+   and the `domo:calendars:start`/`end` sentinels are present and intact.
 
 10. The generated `CLAUDE.md` contains the fallback first-run election,
     scope-to-elected, and re-election standing instructions, routed through
