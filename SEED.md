@@ -299,19 +299,80 @@ complete.
 5. Install the five sub-SEEDs in the order listed in `## Dependencies`. Each
    slice receives the same baked home. Each slice owns its own generation,
    regenerate-once policy, Verification, and terminal failure recording.
+   User-facing steps cluster into the decision moment (the next action); a
+   human-dependent slice verification pends until its watch section flips.
 6. If a sub-SEED reaches terminal `failure`, stop the install walk. Do not
    regenerate from the root. Keep the partial state and failure reason visible in
    `install-report.json` and the generated dashboard if available.
 7. After all slices pass, run this root's union Verification against the just
    generated instance. The root union is non-regenerating.
 
+### The user answers once
+
+The install clusters every user-facing step into one contiguous interactive
+sitting — the decision moment. Before the moment, the installing agent does
+generation-only work: the contract clone and slice artifact generation, nothing
+user-facing. Slice verifications that depend on a human step — the Claude
+login gate, the Calendar connector — pend into the moment and are carried by
+the watch sections below; an already-satisfied gate simply renders as done.
+After the moment, the agent runs unattended to terminal state. The agent MUST
+announce the moment's start on the installer page and in chat.
+
+The setup form is the moment's surface. Sections unlock in order; a section
+renders locked until its prerequisites are met, and earlier sections are
+answerable from first paint:
+
+1. **Household** — the solo/group mode election plus, for group, the other
+   household members' display names. Answerable from the moment the page first
+   paints. The form states the convention: the installing user is the chat
+   owner and is automatically included; member names list the other household
+   members. `members` follows the answers-file rule: `[]` for solo, 1–8 names
+   for group.
+2. **Claude login (watch, not an input)** — renders the generated login
+   command with a copy button and a live watching status that flips to logged
+   in when the four-field auth gate passes. When auth is already satisfied at
+   render time, the section renders already logged in, nothing to do, and
+   never asks. The login itself stays in the terminal and browser; no
+   credential ever touches the page.
+3. **Google Calendar connector (watch, not an input)** — mirrors the login
+   watch: renders `https://claude.ai/customize/connectors` with a copy button
+   and a watching status that flips to connected when the connector probe
+   reports CONNECTED, or renders already connected, nothing to do.
+4. **Calendar election** — unlocks only after the login and connector watches
+   have both flipped. It renders the user's real calendars as checkboxes from
+   the installing agent's own connector call (ids carried; names resolved
+   server-side per `## Dependencies`). **"Skip — Domo will ask me by text" is
+   a first-class answer** that records `"elected": []` in the answers file;
+   submitting the form without touching the section is the same answer, and
+   the section says so plainly.
+5. **Activation** — unlocks only when the activation helpers are generated
+   AND the calendar election section is answered or explicitly skipped. This
+   is the freeze point: everything `plow-activation` transcribes into
+   `install-state.json` is settled before activation runs, and the
+   answers-to-install-state transcription MUST be confirmed complete before
+   slice-5 generation begins. The section renders activation rows from the
+   slice's recorded non-secret display values: the full `Plow Activate:
+   <code>` string with a copy button, the send-to number, an `sms:` deep link
+   pinned in the macOS-Messages-compatible form
+   `sms:<number>&body=<url-encoded full string>`, a live countdown rendered
+   from the recorded code expiry, and a verified flip when redeem lands. In
+   group mode the owner's row renders first; member `VERIFY-` rows render
+   only after the generated WebSocket listener is up — the
+   codes-after-listener-up invariant is unchanged, and only the member rows
+   wait on the listener, so the section cannot deadlock on a listener that
+   comes up during the activation run. Member codes are relayed by the owner
+   to members; the page says so. An expired, never-redeemed code is re-minted
+   by the activation slice and the page MUST replace it — a dead code is
+   never displayed.
+
 ### Domo is activated
 
 Activation is delegated to the generated Plow activation slice. The installing
-agent relays only non-secret text instructions: the full
-`Plow Activate: <code>` string, the send-to number, and any member `VERIFY-`
-codes. The root MUST NOT duplicate solo/group election logic, edit Plow state by
-hand, or surface the bearer token.
+agent relays only non-secret text instructions and page rows: the full
+`Plow Activate: <code>` string, the send-to number, the recorded code expiry,
+and any member `VERIFY-` codes. Mode and member names are carried from the
+decision moment's household answer. The root MUST NOT duplicate activation
+logic, edit Plow state by hand, or surface the bearer token.
 
 ### Domo runs
 

@@ -5,7 +5,11 @@
 ## Dependencies
 
 This slice activates Domo with Plow Chat, either as a solo chat or as a group
-chat, and writes the local channel state consumed by later slices.
+chat, and writes the local channel state consumed by later slices. The
+solo/group mode and group member display names are elected at the root SEED's
+decision moment and arrive as carried, validated generation context; this
+slice runs no interview of its own. It is also the single transcriber of the
+root's carried answers into `<HOME>/install-state.json`.
 
 Hard dependencies:
 
@@ -51,12 +55,26 @@ runtime.
   non-secret display values until activation is complete. It MUST be removed
   after successful state write or cleanup.
 - **Install state** - `<HOME>/install-state.json`, chmod 600. This slice owns
-  `interview.mode`, `interview.members`, `activation`, and
-  `activation_detail`.
+  the file's writes: `interview.mode`, `interview.members`, `activation`,
+  `activation_detail`, and the verbatim `calendars` pass-through. No other
+  slice writes this file.
+- **Carried answers** - the validated decision-moment values the installing
+  agent carries into this slice as generation context: the elected mode, the
+  member display names (`[]` for solo, 1-8 names for group), and the calendar
+  election `{ elected, elected_at }`. They originate from the root-owned raw
+  answers file, which this slice MUST NOT read; the carried, re-validated
+  values are the input.
+- **Calendars pass-through** - the top-level `calendars` field of
+  `<HOME>/install-state.json`: `{ "elected": [ { "name", "id" } ... ],
+  "elected_at": "<iso8601>" }`, copied verbatim from the carried answers.
+  `elected == []` records an explicit skip; the consumer is
+  `seeds/domo-runtime/SEED.md`'s `author`, which reads only
+  `install-state.json`.
 - **Solo activation detail** - `activation_detail.mode == "solo"` plus the
-  non-secret display values needed for the install dashboard and rehearsal
+  non-secret display values needed for the install page and rehearsal
   evidence: `base_url`, `status`, `display_code`, `activation_message`,
-  `send_to`, and the contract line identifier when available.
+  `send_to`, `code_expires_at`, and the contract line identifier when
+  available.
 - **Group activation detail** - `activation_detail.mode == "group"` plus owner
   activation status, selected line, chat object, participant display names,
   one-time member verification codes, per-member status, and `chat_active`.
@@ -101,23 +119,50 @@ NOT copy or depend on any committed activation script.
    terminal `failure` with the reason to the repo-root `install-report.json`,
    and do not attempt a third generation.
 
+### Install answers are transcribed
+
+This slice is the single transcriber of the root's decision-moment answers
+into `<HOME>/install-state.json`:
+
+1. `interview.mode` and `interview.members` are written from the carried
+   answers. Mode and member display names are elected at the root's decision
+   moment, never by an interview in this slice.
+2. The carried calendar election is written as the verbatim top-level
+   `calendars` pass-through, including `elected_at`, exactly as validated by
+   the installing agent. This slice MUST NOT reinterpret, re-sort, rename, or
+   drop entries.
+3. Transcription happens on every install pass. A re-install where activation
+   short-circuits because existing state already matches the requested mode
+   MUST still write the fresh `calendars` field (and refreshed
+   `interview.mode`/`interview.members`) from this install's carried answers —
+   a skipped activation never drops a fresh election.
+4. Transcription MUST be settled before slice-5 (`domo-runtime`) generation
+   begins.
+
 ### Domo is activated as a solo chat
 
 The `activate --solo` helper MUST perform the contract's activation-with-first-
 chat flow using `provision_chat` by name as Domo's solo knob. This SEED does
 not define that API shape; it only owns these Domo-side requirements:
 
-1. Surface the exact instruction text `Plow Activate: <display_code>` and the
-   contract's send-to number to the installing agent and install dashboard.
-   The user MUST text the full string. A bare code MUST fail.
+1. Surface the exact instruction text `Plow Activate: <display_code>`, the
+   contract's send-to number, and the code expiry timestamp `code_expires_at`
+   (mint time plus the pinned redeem window) to the installing agent and
+   install page. The user MUST text the full string. A bare code MUST fail.
 2. Poll redeem every 3 seconds for up to 300 seconds until the contract reports
    verified. Timeout exits 75.
-3. On success, write `<HOME>/.claude/plow-chat/state.json` chmod 600 and exactly
+3. If the redeem window lapses with the code never redeemed, the activation
+   path re-mints a fresh code and updates the surfaced display values; an
+   expired code MUST NOT remain displayed. Re-mint applies only to genuinely
+   expired, never-redeemed codes — it never rotates preserved one-time codes
+   on restart-resume.
+4. On success, write `<HOME>/.claude/plow-chat/state.json` chmod 600 and exactly
    `{base_url, token, chat_uid}` with sorted keys, where `chat_uid` starts with
    `cht_`.
-4. Write `<HOME>/install-state.json` chmod 600 with
-   `activation == "complete"` and a solo `activation_detail`.
-5. Remove activation scratch state after success.
+5. Write `<HOME>/install-state.json` chmod 600 with
+   `activation == "complete"`, a solo `activation_detail`, and the transcribed
+   decision-moment answers.
+6. Remove activation scratch state after success.
 
 ### Domo is activated as a group chat
 
@@ -125,13 +170,21 @@ The `activate --group <member-name>...` helper MUST perform the contract's
 activate-before-chat-creation flow. This SEED does not define the API shape; it
 only owns the Domo-side election, resume behavior, and member-verification UX.
 
-1. Group mode MUST be elected in this slice, not by the root SEED. The
-   generated helper MUST reject `activate --group` with no member names.
+1. Group mode is elected at the root SEED's decision moment and carried into
+   this slice; this formally reverses the earlier rule that group mode had to
+   be elected in this slice, an explicit recorded design decision. State
+   ownership does not move: this slice still writes the election into
+   `install-state.json` as its transcriber. The generated helper MUST still
+   reject `activate --group` with no member names.
 2. A valid solo `state.json` MUST NOT short-circuit a requested group
    activation. Idempotency is mode-specific: existing state may skip work only
    when `state.json` and `install-state.json` match the requested mode.
 3. Owner activation MUST surface the full `Plow Activate: <display_code>` text,
-   not a bare code, and poll redeem at the pinned cadence.
+   not a bare code, plus the send-to number and `code_expires_at`, and poll
+   redeem at the pinned cadence. The solo re-mint rule applies to the owner
+   code: expired and never redeemed means re-mint and update the surfaced
+   values; member `VERIFY-` codes surface an expiry only when the contract
+   provides one, and preserved one-time codes are never rotated by re-mint.
 4. After owner verification, create the group chat according to the contract and
    immediately persist the returned one-time member codes into chmod-600
    `install-state.json`.
@@ -206,10 +259,11 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
      and (.chat_uid | type == "string" and startswith("cht_"))' "$state"
    ```
 
-6. Group activation against the selected Plow base URL shows the group election,
-   verifies the owner with the full activation instruction, reveals member
-   `VERIFY-` codes only after the WebSocket listener is up, verifies each member,
-   and finishes with `activation_detail.chat_active == true`.
+6. Group activation against the selected Plow base URL runs from the carried
+   group mode and member names without prompting for an election in this
+   slice, verifies the owner with the full activation instruction, reveals
+   member `VERIFY-` codes only after the WebSocket listener is up, verifies
+   each member, and finishes with `activation_detail.chat_active == true`.
 
 7. Restart-resume preserves the original group chat and member codes. Evidence
    shows the chat UID plus all `VERIFY-` codes in `<HOME>/install-state.json`
@@ -228,3 +282,17 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
     After generated `cleanup` exits 0, the server-side chat is gone or already
     absent, local `state.json` is removed, and `activation_detail.token` plus
     `activation_detail.member_codes` are absent from `<HOME>/install-state.json`.
+
+11. The decision-moment answers are transcribed. `<HOME>/install-state.json`
+    carries `interview.mode` and `interview.members` matching the carried
+    answers and the verbatim top-level `calendars` pass-through including
+    `elected_at` (or `elected == []` for an explicit skip). On a re-install
+    whose activation short-circuited against matching existing state, the
+    `calendars` field still reflects this install's carried answers while the
+    chat UID is unchanged.
+
+12. The activation surface records the non-secret display values the install
+    page renders: `activation_message`, `send_to`, `display_code`, and
+    `code_expires_at`. No expired never-redeemed code remains surfaced after
+    its window lapses; the re-minted code replaces it in the recorded display
+    values.
