@@ -256,12 +256,19 @@ entrypoint.
      `--append-system-prompt` (`domo-runtime.json`): `CLAUDE.md` is re-read at
      every session start and is the editable surface Domo itself rewrites; the
      append-system-prompt is fixed at launch and cannot carry an evolving
-     election. The generated `CLAUDE.md` MUST include standing instructions
-     that (exact wording is the generator's; these MUSTs are normative):
+     election. The instruction text MUST NOT reproduce the placeholder line
+     or a sentinel line verbatim as a standalone line - refer to them inline
+     (e.g. in backticks mid-sentence) so the block region stays the unique
+     match target for Domo's own anchored file edits. The generated
+     `CLAUDE.md` MUST include standing instructions that (exact wording is
+     the generator's; these MUSTs are normative):
 
-     - **Fallback trigger:** on the first conversation, if the `## Calendars`
-       block still reads `(not yet elected)`, Domo MUST run the election before
-       using the calendar for anything.
+     - **Fallback trigger:** on the first conversation - a bare greeting
+       included - if the `## Calendars` block still reads `(not yet elected)`,
+       Domo MUST open the election in its first reply, before any calendar
+       use. "Before you use the calendar" is not license to defer past the
+       first exchange; if the first text was itself a calendar question,
+       electing first and then answering is the expected extra message.
      - **List with a real call:** Domo MUST call
        `mcp__claude_ai_Google_Calendar__list_calendars` and tell the user, over
        text, which calendars it can see - names, not raw ids. If the call
@@ -547,17 +554,41 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
     is fixture-class and would leave a fake election in a live `CLAUDE.md`;
     it lives in private rehearsal evidence with a mandatory restore step.
 
-11. `status --assert` and `doctor` are green immediately after readiness and again
+11. Primary election path, live: with `install-state.json` carrying the
+    install moment's election, a calendar question is answered scoped to the
+    elected calendars with no election conversation.
+
+12. Fallback election path, live: when no election arrived at install, on
+    first contact Domo lists the real calendars and asks which to use through
+    the `reply` tool; after the user answers, the `## Calendars` block
+    reflects the elected set - sanitized name, verbatim id, and a fresh
+    `elected_at` stamp line inside the sentinels - written by Domo's own
+    file edit under `--permission-mode auto`.
+
+13. A subsequent calendar question's answer reflects only the elected
+    calendars. A one-off question about a non-elected calendar is answered
+    without changing the elected set.
+
+14. Restart-survival: after electing, `<HOME>/bin/domo stop` then
+    `<HOME>/bin/domo ready`, then a calendar question is answered scoped to
+    the elected set WITHOUT re-eliciting - the regeneration-preserve rule
+    holds on a routine restart.
+
+15. A re-election request ("use my work calendar too") updates the block and
+    subsequent answers include the added calendar - editable standing
+    context, not frozen config.
+
+16. `status --assert` and `doctor` are green immediately after readiness and again
     after a hold of at least 120 seconds. Neither command prints the Plow token.
 
-12. `logs` restores terminal state and strips raw TUI control bytes before
+17. `logs` restores terminal state and strips raw TUI control bytes before
     printing. `stop` tree-kills by scoped pinned-session signature and sweeps
     channel children by the baked channel path.
 
-13. `reset` delegates teardown in order: generated Plow activation `cleanup`,
+18. `reset` delegates teardown in order: generated Plow activation `cleanup`,
     then generated Claude instance `logout`, then guarded local removal. It does
     not re-implement Plow delete-chat behavior or Claude logout behavior.
 
-14. Token hygiene is clean. The Plow token value from `state.json` does not
+19. Token hygiene is clean. The Plow token value from `state.json` does not
     appear in argv, generated runtime files, daemon logs, status output,
     dashboard text, committed files, or install evidence.
