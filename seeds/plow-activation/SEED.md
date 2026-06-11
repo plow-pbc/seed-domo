@@ -197,7 +197,12 @@ only owns the Domo-side election, resume behavior, and member-verification UX.
    server: the channel server treats the same frame name as liveness, the
    opposite of activation.
 7. When a participant-verification event arrives, immediately persist that
-   participant's verified status. When the chat becomes active, write
+   participant's verified status. The generated activation MUST also reconcile
+   participant verification through the contract's REST read surface as a
+   load-bearing backstop to the WebSocket listener — the codes-after-listener-up
+   invariant exists so no verification is ever missed, and the listener plus
+   REST reconciliation carry that purpose together; `connected` frames remain
+   ignored either way. When the chat becomes active, write
    `state.json`, set `activation == "complete"`, and preserve the one-time codes
    already written to `install-state.json`.
 8. Restart MUST resume from `install-state.json` without re-creating the chat or
