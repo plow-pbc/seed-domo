@@ -41,12 +41,16 @@ generated Claude launch path in this slice.
   `<HOME>/.claude/settings.json`, both chmod 600.
 - **Claude-instance runtime dir** - `<HOME>/runtime/claude-instance`, containing
   generated helpers for `login`, `auth-status`, and `logout`.
-- **Login helper** - a generated executable that runs `claude "/quit"` under the
-  isolated config with metered keys unset, then drains delayed terminal input and
-  runs `stty sane` when stdin is a TTY. The helper uses `claude "/quit"`, not
-  `claude auth login`, because the auth subcommand can skip the normal TUI and
-  browser first-run flow; the TUI path is what reliably seeds subscription auth
-  in the isolated config.
+- **Login helper** - a generated executable that runs `claude "/login"` under
+  the isolated config with metered keys unset, then drains delayed terminal
+  input and runs `stty sane` when stdin is a TTY. The helper uses
+  `claude "/login"` (the in-TUI login-method selector), not a bare
+  `claude "/quit"` launch and not `claude auth login`: the `auth login`
+  subcommand can skip the browser first-run flow, and a bare launch no longer
+  surfaces any login wall because this slice pre-seeds
+  `hasCompletedOnboarding: true` (which suppresses the onboarding login step).
+  `/login` reliably opens the subscription-OAuth path regardless of onboarding
+  state. The helper MUST NOT ask for, print, or copy Claude auth tokens.
 - **Auth-status helper** - a generated executable that runs
   `claude auth status --json` under the isolated config and succeeds only for
   the four-field subscription-auth truth.
@@ -106,13 +110,15 @@ NOT copy or depend on any committed login script.
    ```bash
    env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
      CLAUDE_CONFIG_DIR="<HOME>/.claude" \
-     claude "/quit"
+     claude "/login"
    ```
 
-   The helper MUST print the baked home and isolated config path, but MUST NOT
-   ask for, print, or copy Claude auth tokens. After Claude exits, when stdin is
-   a TTY, the helper MUST drain delayed terminal input using noncanonical reads
-   and then run `stty sane`.
+   This opens the in-TUI login-method selector so the user can choose "Claude
+   account with subscription" and complete the browser login. The helper MUST
+   print the baked home and isolated config path, but MUST NOT ask for, print,
+   or copy Claude auth tokens. After Claude exits, when stdin is a TTY, the
+   helper MUST drain delayed terminal input using noncanonical reads and then
+   run `stty sane`.
 
 5. Generate any prompt-confirmation helper needed for the Claude first-run TUI.
    It MUST match stable label anchors, not brittle full-screen text snapshots,
@@ -161,9 +167,13 @@ NOT copy or depend on any committed login script.
    for normal install verification.
 
 8. Run the login helper if the auth-status helper does not already report the
-   four-field subscription-auth truth. Surface the login command to the user and
-   wait until the user completes browser login. Then poll auth-status every 2
-   seconds until it succeeds or the 600-second install timeout expires.
+   four-field subscription-auth truth. The helper opens the in-TUI login-method
+   selector; surface the command to the user and instruct them to choose
+   "Claude account with subscription" and complete the browser login. Auth
+   completes when the browser OAuth callback writes the Keychain credential
+   (keyed to this `CLAUDE_CONFIG_DIR`), independent of the TUI session, so the
+   user may close the TUI once logged in. Then poll auth-status every 2 seconds
+   until it succeeds or the 600-second install timeout expires.
 
 If this slice's `## Verification` fails because a generated helper or config is
 wrong, the installing agent MUST regenerate this slice exactly once and rerun
