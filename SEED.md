@@ -131,13 +131,23 @@ and `ref/` still ships only `verify.sh`:
 - Bind `127.0.0.1` only; no CORS; no TLS (loopback plus token is the accepted
   posture).
 - Lifetime: started with the skeleton, killed at terminal state (success or
-  failure); a static snapshot page remains at `<HOME>/install-dashboard.html`.
+  failure). The kill MUST take the endpoint's whole process group — no child
+  (a hung list call, a timed-out helper) may survive the teardown. A static
+  snapshot page remains at `<HOME>/install-dashboard.html`: meta-refresh
+  removed, final statuses, every non-clean step's one-line reason inline, and
+  a "Domo is live — try texting it" card with the send-to number.
   `<HOME>/.install/` is KEPT after terminal state — the directory chmod 700,
   every file within it chmod 600 — it is the resume/audit record.
   `answers.json` holds non-secret personal data (member names), which is why
   the tight modes; nothing in it is a secret.
 - The installing agent polls the answers file; it MUST NOT block synchronously
   on the form.
+- Resume: on any re-entry after an interruption, the installing agent MUST
+  verify endpoint liveness; if the endpoint is dead, restart it on a new
+  ephemeral port with a NEW install token, re-surface the URL per the tier
+  rules, and re-render answered sections from the durable answers file. A
+  stale open tab tells the user to use the new link rather than failing
+  silently.
 
 Setup-form sanitization is normative — the form is an injection surface.
 Member names and any future free text flow into the workspace prompt
@@ -311,6 +321,22 @@ complete.
    `install-report.json` and the generated dashboard if available.
 7. After all slices pass, run this root's union Verification against the just
    generated instance. The root union is non-regenerating.
+8. The install is resumable from durable state. All progress lives in
+   `install-report.json` and the answers file; an agent re-entering the
+   install after an interruption, context loss, or its own runtime outage
+   MUST reconcile that recorded state and continue — never restart completed
+   steps, never re-ask answered questions, never demand explanation or
+   context from the user. The agent MUST NOT block synchronously on any user
+   step: all waits are polls against durable state with recorded deadlines,
+   and a late-arriving answer resumes the walk without a human nudge. On
+   connection failures during install actions, retry with backoff on the
+   order of minutes before recording any terminal failure.
+9. Every non-clean step status — `success-with-deviation`, `failure`, a
+   non-fatal fallback — MUST carry a one-line human-readable reason in
+   `install-report.json`, and that line MUST render inline wherever the
+   status appears: on the page's step row, in the final chat summary, and in
+   the terminal static snapshot. A status label without its reason is a
+   defect.
 
 ### The user answers once
 
@@ -420,17 +446,29 @@ MUST NOT regenerate slices or build a second instance.
    non-secret statuses for the Plow contract, all five slices, dashboard
    generation, and root union Verification.
 
-3. `<HOME>/install-dashboard.html` exists when the soft gate can generate it. It
-   reflects the statuses in `install-report.json`, contains a meta-refresh tag,
-   contains the copy-paste login command, contains the full `Plow Activate:
-   <code>` string and send-to number when activation is waiting, and contains no
-   token, password, API key, bearer value, or secret-looking credential. If the
-   dashboard could not be generated or opened, `install-report.json` records the
-   non-fatal fallback and the same copy-paste values are surfaced in
-   terminal/chat. This item applies to the tier-3/4 static fallback page and
-   the terminal snapshot; the tier-1/2 served page carries no meta-refresh and
-   is governed by the `## Dependencies` bounded rule, pending this union
-   item's per-tier rewrite.
+3. The installer page item is tier-aware, judged for the tier the install
+   actually ran in (recorded in `install-report.json`):
+
+   - Served page (tiers 1–2): the page was served at the loopback+token URL,
+     polled `GET /status`, and carried NO meta-refresh tag; it was up before
+     slice 1, proven by the retroactively recorded page and endpoint start
+     timestamps; its one setup-form area's answers round-tripped through the
+     carried route into the generated instance; and the activation it
+     surfaced is the activation the user completed. At terminal state the
+     endpoint is dead — a connection attempt is refused — and no endpoint
+     child process survives.
+   - Static fallback page (tier 3): exists at `<HOME>/install-dashboard.html`
+     with a meta-refresh tag, reflects the statuses in `install-report.json`,
+     and carries the copy-paste login command plus the full
+     `Plow Activate: <code>` string and send-to number while activation
+     waits; `install-report.json` records the non-fatal fallback and the same
+     values surfaced in terminal/chat.
+   - Terminal snapshot (every tier): exists at
+     `<HOME>/install-dashboard.html` with meta-refresh removed, final
+     statuses, every non-clean step's one-line reason inline, and the
+     "Domo is live — try texting it" card with the send-to number.
+   - Every tier: no token, password, API key, bearer value, or secret-shaped
+     credential anywhere in the page, the status responses, or the snapshot.
 
 4. Claude instance seam: the generated isolated config is logged in with
    `rc == 0`, `loggedIn == true`, `authMethod == "claude.ai"`, and

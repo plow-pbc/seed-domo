@@ -408,7 +408,12 @@ entrypoint.
 12. Generate `logs` to restore terminal state on exit. It MUST run `stty sane`
     when possible, reset common terminal modes, and pass raw daemon logs through
     `strip_ansi` before printing. Transcript rendering MUST use the pinned
-    session jsonl when present and MUST avoid printing secrets.
+    session jsonl when present and MUST avoid printing secrets. Any generated
+    transcript or evidence matching against tool-call names MUST accept the
+    namespaced MCP form `mcp__<server>__<tool>` (for the channel reply,
+    `mcp__plow-chat__reply`) wherever a bare tool name is matched — Claude Code
+    records MCP tools under the namespaced form, and a bare-name-only match
+    silently renders nothing.
 
 13. Generate `stop` to stop the wrapper PID, then tree-kill by the recorded
     scoped signature derived from the pinned session id. It MUST also sweep
