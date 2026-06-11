@@ -120,7 +120,10 @@ as the installed runtime.
          "message_id": "<message uid>",
          "user": "<sanitized display name or You>",
          "ts": "<message timestamp or receive timestamp>",
-         "provider_key": "<sender provider key when present>"
+         "provider_key": "<sender provider key when present>",
+         "current_date": "<host-local YYYY-MM-DD at delivery, optional>",
+         "day_of_week": "<host-local weekday name at delivery, optional>",
+         "household_timezone": "<host local IANA zone, optional>"
        }
      }
    }
@@ -128,7 +131,14 @@ as the installed runtime.
 
    `chat_id` MUST come from `state.chat_uid`. Sender display names MUST strip
    `"`, `<`, `>`, carriage returns, and newlines, then default to `You` when the
-   result is empty.
+   result is empty. The meta MAY additionally carry `current_date`,
+   `day_of_week`, and `household_timezone` fields, each stamped from the host's
+   local clock and zone at delivery time. These are the canonical date-anchor
+   mechanism consumed by the `domo-runtime` slice (its `## Verification` item
+   20 / step 16): when present they give the pinned session per-event date data
+   instead of relying on a standing prompt instruction. They are optional here
+   so this slice stays independently verifiable; `domo-runtime` step 16 pins
+   them as the mechanism it surfaces.
 9. The generated server MUST handle both state arrival orders, and
    state-already-present is the COMMON one: the decision-moment install runs
    activation before the runtime, so a fresh launch normally finds

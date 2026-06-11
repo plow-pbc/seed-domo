@@ -365,7 +365,15 @@ entrypoint.
 
 8. Generate the readiness gate as snapshot -> delta -> sessionId match. The
    gate's own exit code MUST decide readiness: `start` MUST NOT run the gate
-   inside a pipeline or wrapper that masks its exit status. `start`
+   inside a pipeline or wrapper that masks its exit status. This non-masking
+   rule is general across this slice: EVERY generated gate or sender whose exit
+   code decides a branch — the readiness gate, `status --assert`, `doctor`,
+   `send-ready`, and any helper a caller tests with `if`/`&&`/`||` — MUST have
+   its OWN exit status reach that decision. None may be the left side of a `|`
+   (including `| tee`), the body of a `$(...)`/backtick capture, or any wrapper
+   that substitutes the pipeline's exit for the helper's; where a pipe is
+   unavoidable the generator MUST consult `${PIPESTATUS[0]}` or set
+   `pipefail` so the helper's real code is what decides. `start`
    MUST snapshot the host MCP log files immediately before daemon launch, then
    accept readiness only when the appended delta contains both:
 
@@ -445,8 +453,12 @@ entrypoint.
 
 16. The assembled runtime MUST surface the current date, the day of week, and
     the household timezone to the pinned session as DATA accompanying every
-    inbound channel event — in the channel-notification meta or an equivalent
-    per-event mechanism the generator chooses. This is a mechanism, not an
+    inbound channel event. The canonical mechanism is the channel-notification
+    meta `current_date`, `day_of_week`, and `household_timezone` fields defined
+    in `seeds/plow-channel-server/SEED.md` step 8: this slice MUST surface them
+    on every inbound event (the channel server stamps them from the host clock;
+    an equivalent generator-chosen per-event mechanism is acceptable only if it
+    delivers the same three fields per event). This is a mechanism, not an
     instruction: a standing "be careful with dates" prompt line does NOT
     satisfy it. The session's clock-blindness is a data gap, not a discipline
     gap — a real install answered a "what's tomorrow?" question with the
@@ -621,5 +633,8 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
 20. Date anchor: a "what's tomorrow?"-class question through the channel is
     answered with the correct calendar date and day of week on the first
     reply, and the inbound event that produced it demonstrably carried the
-    current date, day of week, and household timezone as per-event data (the
-    step 16 mechanism), not via a standing prompt instruction.
+    current date, day of week, and household timezone as per-event data — the
+    channel-notification meta `current_date` / `day_of_week` /
+    `household_timezone` fields (the step 16 mechanism, defined in
+    `seeds/plow-channel-server/SEED.md` step 8), not a standing prompt
+    instruction.
