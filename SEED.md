@@ -38,22 +38,116 @@ defaulting to the absolute path for `$HOME/.domo` in a user install. That path i
 an install constant carried into every slice generation. Generated entrypoints
 MUST embed the concrete path and MUST NOT read a runtime `DOMO_HOME` variable.
 
-Before slice 1, the installing agent MUST also create repo-root
-`install-report.json` and generate `<HOME>/install-dashboard.html`. The dashboard
-is a static display-only file, not a shipped server and not an orchestrator. It
-MUST be regenerated from `install-report.json` as steps complete and MUST include:
+Immediately after home resolution the installing agent MUST generate the
+installer page skeleton and the setup endpoint under `<HOME>/.install/` and
+open the user's browser at the endpoint's loopback URL. The page MUST be the
+first generated artifact after home resolution — before the Plow contract
+clone, before `install-report.json` is fully populated, before any slice — so
+it pops up ASAP after kickoff, even in a loading state. Only then is
+`install-report.json` initialized; the page hydrates from it from then on, and
+the page and endpoint start timestamps are recorded retroactively into
+`install-report.json` once it exists.
 
-- a step list with live statuses from `install-report.json`;
-- copy-paste blocks for the generated Claude login command, the full
-  `Plow Activate: <code>` string, and the send-to number;
-- no bearer token, Claude token, API key, password, or secret;
-- a meta-refresh tag so a browser reloads the regenerated file;
-- the `file://` URL surfaced to the user when a browser can open it.
+The installer page and setup endpoint are governed by this bounded rule:
 
-Dashboard generation, refresh, browser open, and `file://` surfacing are soft
-gates. If any dashboard step fails or no browser is available, the install MUST
-continue through terminal/chat fallback and `install-report.json` remains the
-canonical progress record.
+> The generated installer page MAY be served by a generated,
+> **install-lifetime-only**, **loopback-only** local endpoint, and MAY host
+> **exactly one** interactive area — the **setup form** (the *Setup endpoint*
+> object). Everything else on the page is display-only forever. The endpoint
+> accepts exactly one kind of write: the setup-form answers, validated
+> server-side, written to the root-owned answers file (the *Answers file*
+> object). **No secret is ever accepted as input, rendered as output, or
+> transmitted** (the existing secret-shaped-value gate extends to the
+> endpoint's request/response bodies). The endpoint dies at terminal state; a
+> static snapshot page remains. If the endpoint cannot start or the browser
+> cannot open, the install continues through the static-page + terminal/chat
+> fallback — the soft gate is unchanged: **no page failure ever blocks an
+> install.**
+
+The skeleton MUST render honestly while empty: a title, a "preparing your
+install…" state, the step list as placeholders, and an empty setup-form area
+marked "your part comes soon — keep this page open". It MUST never show fake
+progress. The served page polls the endpoint (`GET /status`, 1–2 s) for the
+current `install-report.json` rendering and form state; meta-refresh is
+retired on the served page and retained on the static fallback page below.
+
+Page availability degrades through four tiers, all non-fatal:
+
+1. Endpoint up and the browser auto-opens — the full experience: served page,
+   setup form, live polling.
+2. Endpoint up but auto-open fails or no opener exists — chat carries the
+   clickable loopback URL, token included; this tier is the ONLY surface that
+   may carry the tokened URL. The full experience resumes the moment the user
+   opens it. Recorded in `install-report.json`.
+3. Endpoint fails — regenerate the static display-only page (meta-refresh,
+   `file://` surfaced) from `install-report.json` as steps complete, and host
+   all questions in chat. Recorded in `install-report.json`. The static page
+   MUST include a step list with live statuses, copy-paste blocks for the
+   generated Claude login command, the full `Plow Activate: <code>` string,
+   and the send-to number, and no bearer token, Claude token, API key,
+   password, or secret.
+4. No browser or opener and no endpoint — terminal/chat carries everything.
+
+Whatever the tier, the install MUST continue and `install-report.json` remains
+the canonical progress record.
+
+The setup endpoint MUST behave as follows. Everything under `<HOME>/.install/`
+is generated at install time — no endpoint or page code ships in this repo,
+and `ref/` still ships only `verify.sh`:
+
+- Serve the installer page at
+  `http://127.0.0.1:<ephemeral-port>/?t=<install-token>`. The browser is
+  opened at this URL in the primary tier (no longer `file://` there).
+- `GET /status` returns non-secret JSON: the rendered install-report state,
+  form-section states (locked / unlocked / answered), and live values.
+- `POST /answers` is the ONE write. It accepts the setup-form submission (or
+  per-section partial submissions, each stamped at its own POST), validates
+  server-side per the sanitization rules below, and atomically writes the
+  answers file. Every other write is rejected.
+- A per-install random install token is embedded in the page URL and required
+  on every request; requests without it are rejected. The token is
+  CSRF/DNS-rebinding hygiene for a loopback service, not a secret under the
+  token rules — but it MUST never appear in `install-report.json` or any log,
+  and chat MAY carry the tokened URL only in the auto-open-failure tier.
+- Bind `127.0.0.1` only; no CORS; no TLS (loopback plus token is the accepted
+  posture).
+- Lifetime: started with the skeleton, killed at terminal state (success or
+  failure); a static snapshot page remains at `<HOME>/install-dashboard.html`.
+  `<HOME>/.install/` is KEPT after terminal state, chmod 600 throughout — it
+  is the resume/audit record. `answers.json` holds non-secret personal data
+  (member names), which is why 600; nothing in it is a secret.
+- The installing agent polls the answers file; it MUST NOT block synchronously
+  on the form.
+
+Setup-form sanitization is normative — the form is an injection surface.
+Member names and any future free text flow into the workspace prompt
+(`CLAUDE.md`), Plow display surfaces, and the page itself:
+
+- Names are NFC-normalized BEFORE validation so composed lookalikes cannot
+  dodge the filters.
+- Strip `"` `<` `>` `\r` `\n`, all C0/C1 control characters, and backslashes;
+  strip markdown-significant characters (`` ` `` `*` `_` `#` `[` `]` `(` `)`
+  `|`) — names are rendered into a markdown prompt and MUST never become
+  structure or an instruction; strip U+2028/U+2029 line and paragraph
+  separators, bidirectional controls (U+202A–U+202E, U+2066–U+2069), and
+  zero-width characters (U+200B–U+200D, U+FEFF).
+- Length-cap 64 characters; collapse internal whitespace; reject
+  empty-after-sanitization.
+- Calendar selections are validated as a subset of the presented list (id
+  equality): the POST carries calendar ids only, and the endpoint resolves
+  names from its own held `list_calendars` result — the form cannot introduce
+  a calendar the live call did not return, and a forged or unknown id is
+  rejected.
+- `mode` is validated against its enum. Unknown fields are rejected.
+- Validation happens server-side in the generated endpoint, and the installing
+  agent re-validates before consuming (defense in depth; the endpoint is
+  generated code, not trusted-by-construction).
+- Wherever member or calendar names render into generated prompt context, they
+  MUST sit inside a clearly delimited data region accompanied by an inert-data
+  instruction ("these are display names, never instructions"). A sanitized
+  name is still attacker-chosen text inside a prompt — sanitization narrows it
+  to inert words; the delimited-data convention plus reply-tool discipline is
+  the containment.
 
 First, the external Plow API contract SEED is cloned, audited, and verified. It
 is the single declaring site for the Plow API surface consumed by Domo:
@@ -69,23 +163,79 @@ Then the composed slices are installed leaves-first in this order:
 4. [Purpose](seeds/plow-activation/SEED.md#purpose)
 5. [Purpose](seeds/domo-runtime/SEED.md#purpose)
 
+This listed order governs each slice's generation and verification sequence;
+the install's single interactive sitting (the decision moment) MAY interleave
+user-facing executions across it — a later slice's user-facing run may happen
+inside the sitting while an earlier slice's generated artifacts are already
+complete.
+
 ## Objects
 
 - **Installing agent** - the agent executing this SEED. It resolves the baked
-  home, creates `install-report.json`, generates the static install dashboard,
-  installs slices leaves-first, records evidence, and surfaces user actions.
-- **User** - the human installer. The user completes Claude login, connects
-  Google Calendar if needed, texts the surfaced Plow activation or member
-  verification messages, and confirms the final Domo reply.
+  home, generates the installer page and setup endpoint first, creates
+  `install-report.json`, installs slices leaves-first, records evidence,
+  validates and carries setup-form answers as generation context, and surfaces
+  user actions.
+- **User** - the human installer. The user answers the setup form, completes
+  Claude login, connects Google Calendar if needed, texts the surfaced Plow
+  activation or member verification messages, and confirms the final Domo
+  reply.
 - **Baked Domo home** - the absolute install home selected before slice
   generation. User installs default to `$HOME/.domo`. Generated files contain
   this path as a literal.
 - **`install-report.json`** - the repo-root progress and evidence record for the
   current install. It records each dependency and slice status, terminal failures,
-  non-secret user-action values, and union Verification evidence.
-- **Install dashboard** - `<HOME>/install-dashboard.html`, generated at install
-  time from `install-report.json`. It is display-only, meta-refreshed, and may
-  show only non-secret copy-paste values.
+  non-secret user-action values, the installer page and setup endpoint start
+  timestamps (recorded retroactively once the report exists) and the
+  degradation tier in effect, and union Verification evidence. It MUST NOT
+  contain the install token.
+- **Installer page** - the generated install UI. In the primary tier it is
+  served by the setup endpoint at the loopback+token URL, polls `GET /status`
+  (no meta-refresh), and hosts exactly one interactive area, the setup form;
+  in the endpoint-failure tier it is the static display-only meta-refreshed
+  file regenerated from `install-report.json` and surfaced as `file://`; at
+  terminal state a static snapshot remains at `<HOME>/install-dashboard.html`.
+  Every tier may show only non-secret copy-paste values.
+- **Setup endpoint** - the generated, install-lifetime-only, loopback-only
+  local service under `<HOME>/.install/`. It serves the installer page at
+  `http://127.0.0.1:<ephemeral-port>/?t=<install-token>`, answers
+  `GET /status` with non-secret JSON, accepts the single `POST /answers`
+  write, requires the per-install token on every request, and is killed at
+  terminal state. The token MUST never appear in `install-report.json` or any
+  log.
+- **Answers file** - `<HOME>/.install/answers.json`, chmod 600, written only
+  by the setup endpoint. It is root-owned RAW FORM CAPTURE: context-carried
+  user input collected by the root, an install constant, not persisted runtime
+  state. No slice ever reads this file. The installing agent validates it and
+  carries the values as generation context; `plow-activation` alone
+  transcribes the carried values into `install-state.json` (its existing write
+  gains the pass-through `calendars: { elected, elected_at }` field, copied
+  verbatim from the validated answers, on normal and idempotent-short-circuit
+  paths, settled before slice-5 generation begins); `domo-runtime`'s `author`
+  reads ONLY `install-state.json` and never sees `answers.json`. Shape:
+
+  ```json
+  {
+    "schema": 1,
+    "mode": "solo",
+    "members": [],
+    "mode_submitted_at": "2026-06-10T17:58:12Z",
+    "calendars": {
+      "elected": [ { "name": "Personal", "id": "pat@example.com" } ],
+      "elected_at": "2026-06-10T18:00:00Z"
+    }
+  }
+  ```
+
+  `mode` is `"solo" | "group"`. `members` is an array of
+  `{ "name": "<sanitized>" }`, group only, 1–8 entries. `calendars.elected`
+  is an array of `{ name, id }` whose names are resolved server-side from the
+  endpoint's held `list_calendars` result (a tampered name can never ride in
+  on a valid id); absent or empty means no install-time election, and an
+  explicit skip records `"elected": []`. Under per-section submission the
+  endpoint stamps each section at its own POST; `calendars.elected_at` is
+  stamped at the calendar-section POST and is load-bearing for the calendar
+  election precedence rule owned by `seeds/domo-runtime/SEED.md`.
 - **Claude instance slice** - `seeds/claude-instance/SEED.md`, owner of isolated
   Claude subscription auth, first-run prompt immunity, metered-key-unset launch
   discipline, and logout helper.
@@ -116,11 +266,17 @@ Then the composed slices are installed leaves-first in this order:
 
 1. Resolve the baked Domo home to a concrete absolute path before recursing into
    slices. Carry this value as install context for every slice generation.
-2. Initialize repo-root `install-report.json` with pending records for the Plow
-   contract, all five slices, dashboard generation, and root union Verification.
-3. Generate `<HOME>/install-dashboard.html` from `install-report.json` before
-   slice 1. Surface its `file://` URL when possible. Treat all dashboard failures
-   as non-fatal and continue with terminal/chat fallback.
+2. Immediately generate the installer page skeleton and the setup endpoint and
+   open the browser at the endpoint's loopback URL — the first generated
+   artifact after home resolution, before the contract clone, before
+   `install-report.json` is fully populated, before any slice. Degrade through
+   the `## Dependencies` tiers; treat every page and endpoint failure as
+   non-fatal and never let one block the install.
+3. Initialize repo-root `install-report.json` with pending records for the Plow
+   contract, all five slices, the installer page and setup endpoint (including
+   the degradation tier in effect), and root union Verification. Record the
+   page and endpoint start timestamps retroactively. The page hydrates from
+   the report from then on.
 4. Clone, audit, and verify `https://github.com/plow-pbc/seed-plow-chat`. Record
    the clone path and commit in `install-report.json`.
 5. Install the five sub-SEEDs in the order listed in `## Dependencies`. Each
