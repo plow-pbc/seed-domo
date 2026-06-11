@@ -443,6 +443,16 @@ entrypoint.
     the runtime home from its own location, `DOMO_HOME`, `PWD`, or the caller's
     environment.
 
+16. The assembled runtime MUST surface the current date, the day of week, and
+    the household timezone to the pinned session as DATA accompanying every
+    inbound channel event — in the channel-notification meta or an equivalent
+    per-event mechanism the generator chooses. This is a mechanism, not an
+    instruction: a standing "be careful with dates" prompt line does NOT
+    satisfy it. The session's clock-blindness is a data gap, not a discipline
+    gap — a real install answered a "what's tomorrow?" question with the
+    wrong calendar date and self-corrected only a turn later. The household
+    timezone is the host's local zone (no override exists today).
+
 If this slice's `## Verification` fails because a generated helper or CLI is
 wrong, the installing agent MUST regenerate this slice exactly once and rerun
 Verification. If the rerun still fails, stop the install, write terminal
@@ -607,3 +617,9 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
 19. Token hygiene is clean. The Plow token value from `state.json` does not
     appear in argv, generated runtime files, daemon logs, status output,
     dashboard text, committed files, or install evidence.
+
+20. Date anchor: a "what's tomorrow?"-class question through the channel is
+    answered with the correct calendar date and day of week on the first
+    reply, and the inbound event that produced it demonstrably carried the
+    current date, day of week, and household timezone as per-event data (the
+    step 16 mechanism), not via a standing prompt instruction.

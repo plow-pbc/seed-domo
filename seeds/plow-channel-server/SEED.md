@@ -129,10 +129,17 @@ as the installed runtime.
    `chat_id` MUST come from `state.chat_uid`. Sender display names MUST strip
    `"`, `<`, `>`, carriage returns, and newlines, then default to `You` when the
    result is empty.
-9. The generated server MUST read state lazily and never throw on absent,
-   unreadable, or malformed state. While state is unavailable, it MUST keep the
-   MCP transport alive, keep `reply` erroring, and re-poll every 3 seconds until
-   valid state appears.
+9. The generated server MUST handle both state arrival orders, and
+   state-already-present is the COMMON one: the decision-moment install runs
+   activation before the runtime, so a fresh launch normally finds
+   `state.json` already on disk. On boot with valid state present the server
+   MUST proceed to connect immediately; the initial state read MUST NOT run
+   at module-evaluation time or in any position where pre-existing state can
+   crash startup (a real install hit a temporal-dead-zone crash on exactly
+   this path). The poll path exists for state arriving later: while state is
+   absent, unreadable, or malformed, the server MUST never throw, MUST keep
+   the MCP transport alive, keep `reply` erroring, and re-poll every 3
+   seconds until valid state appears.
 10. The generated WebSocket supervisor MUST treat a `connected` frame as channel
     liveness and write the connected marker. This is deliberately the opposite
     of the activation slice, which ignores `connected` for activation progress;
@@ -189,11 +196,18 @@ root union Verification re-asserts them.
    prove the daemon stays up. Evidence MUST include `status --assert` returning
    0 immediately after start and again after a hold of at least 120 seconds.
 
-3. Send through the real `reply` path and confirm the message lands in the Plow
+3. Present-state boot path: launched with valid `state.json` already on disk
+   — the common decision-moment ordering — the just-started server
+   initializes cleanly and proceeds directly to connect, with no crash and no
+   3-second re-poll detour before the first connection attempt. Like items
+   2 and 4 this is collected once activation state exists, and the root union
+   re-asserts it.
+
+4. Send through the real `reply` path and confirm the message lands in the Plow
    chat with `status` equal to `sent`. Evidence MUST record the non-secret chat
    UID plus the sent message UID/body/status, and MUST NOT record the token.
 
-4. Token hygiene MUST be clean. The Plow token value from `state.json` MUST NOT
+5. Token hygiene MUST be clean. The Plow token value from `state.json` MUST NOT
    appear in argv, generated logs, committed files, dashboard text, or the
    install evidence:
 
