@@ -16,7 +16,12 @@ Hard dependencies:
   `git rev-parse HEAD`, and read that SEED's
   `## Objects` and `## Actions` as the only Plow HTTP and WebSocket API
   surface. This Domo SEED MUST NOT restate Plow endpoints, payload schemas,
-  response schemas, or frame schemas.
+  response schemas, or frame schemas. In a composed install the root has
+  already cloned, audited, and recorded this contract; the root-carried clone
+  path + recorded commit satisfy this requirement, and the slice reads from
+  that clone rather than cloning again. Re-clone only when this slice is
+  installed standalone, where standalone verifiability is the reason the
+  per-slice clone path is kept.
 - **Plow activation slice** - `<HOME>/.claude/plow-chat/state.json` MUST be
   written by `seeds/plow-activation/SEED.md` before live Verification can prove
   outbound sends, WebSocket connection, backfill, and inbound delivery.
@@ -63,10 +68,12 @@ The installing agent MUST generate this slice into the baked Domo home. It MUST
 NOT vendor a prewritten server or depend on any committed channel implementation
 as the installed runtime.
 
-1. Clone `https://github.com/plow-pbc/seed-plow-chat` from `origin/main` into a
-   scratch directory and read its `## Objects` and `## Actions` before writing
-   any server code. Treat that SEED as the only source for Plow HTTP calls,
-   WebSocket ticketing, backfill behavior, frame names, and message fields.
+1. Read the Plow contract SEED's `## Objects` and `## Actions` before writing
+   any server code — in a composed install from the root-carried clone, or, when
+   this slice is installed standalone, from a fresh `origin/main` clone of
+   `https://github.com/plow-pbc/seed-plow-chat` in a scratch directory. Treat
+   that SEED as the only source for Plow HTTP calls, WebSocket ticketing,
+   backfill behavior, frame names, and message fields.
 2. Resolve the baked home before generation. Create:
 
    ```text
@@ -121,9 +128,9 @@ as the installed runtime.
          "user": "<sanitized display name or You>",
          "ts": "<message timestamp or receive timestamp>",
          "provider_key": "<sender provider key when present>",
-         "current_date": "<host-local YYYY-MM-DD at delivery, optional>",
-         "day_of_week": "<host-local weekday name at delivery, optional>",
-         "household_timezone": "<host local IANA zone, optional>"
+         "current_date": "<host-local YYYY-MM-DD at delivery>",
+         "day_of_week": "<host-local weekday name at delivery>",
+         "household_timezone": "<host local IANA zone>"
        }
      }
    }
@@ -131,14 +138,15 @@ as the installed runtime.
 
    `chat_id` MUST come from `state.chat_uid`. Sender display names MUST strip
    `"`, `<`, `>`, carriage returns, and newlines, then default to `You` when the
-   result is empty. The meta MAY additionally carry `current_date`,
-   `day_of_week`, and `household_timezone` fields, each stamped from the host's
-   local clock and zone at delivery time. These are the canonical date-anchor
-   mechanism consumed by the `domo-runtime` slice (its `## Verification` item
-   20 / step 16): when present they give the pinned session per-event date data
-   instead of relying on a standing prompt instruction. They are optional here
-   so this slice stays independently verifiable; `domo-runtime` step 16 pins
-   them as the mechanism it surfaces.
+   result is empty. The meta MUST carry `current_date`, `day_of_week`, and
+   `household_timezone`, each stamped from the host's local clock and zone at
+   delivery time. These are the single canonical date-anchor mechanism consumed
+   by the `domo-runtime` slice (its `## Verification` item 20 / step 16) — there
+   is no alternate path. The generated notification builder MUST include a
+   costless conditional self-check that the three fields are non-empty before a
+   notification is sent (a trivial presence assertion at build time), so a
+   generation that drops them fails loudly rather than silently shipping a
+   clock-blind session.
 9. The generated server MUST handle both state arrival orders, and
    state-already-present is the COMMON one: the decision-moment install runs
    activation before the runtime, so a fresh launch normally finds
@@ -156,7 +164,12 @@ as the installed runtime.
     the generated code and review checklist MUST NOT unify those two rules.
 11. The generated inbound path MUST ignore outbound echoes, de-duplicate by
     message UID, persist `last_seen.json` chmod 600, and cap the high-water mark
-    at 2000 UIDs.
+    at 2000 UIDs. Ordering is ack-before-persist: a live (or backfill-new) UID
+    is added to the persisted high-water mark ONLY after its channel
+    notification send has completed, so a crash or reconnect between marking and
+    delivery can never permanently suppress an undelivered message. The sole
+    exception is the startup-baseline backfill (step 12), which seeds the mark
+    WITHOUT delivering.
 12. First backfill after a fresh server start MUST seed the high-water mark
     without delivering historical messages. On daemon restart, historical
     messages already in the chat MUST NOT be replayed to Claude; a fresh inbound
@@ -219,12 +232,22 @@ root union Verification re-asserts them.
 
 5. Token hygiene MUST be clean. The Plow token value from `state.json` MUST NOT
    appear in argv, generated logs, committed files, dashboard text, or the
-   install evidence:
+   install evidence. The probes are presence-only — each emits only its fixed
+   pass/fail status, never the matching line — so the check itself can never
+   print the Bearer token it is detecting:
 
    ```bash
    token="$(jq -r '.token' "<HOME>/.claude/plow-chat/state.json")"
    test -n "$token"
-   ! pgrep -af "$token"
-   ! grep -R -- "$token" "<HOME>/.claude/run" 2>/dev/null
-   ! git grep -F -- "$token"
+   ! pgrep -af "$token" >/dev/null 2>&1
+   ! grep -Rq -- "$token" "<HOME>/.claude/run" 2>/dev/null
+   ! git grep -qF -- "$token"
    ```
+
+   Argv residual (accepted and stated): passing `$token` as a `pgrep`/`grep`
+   pattern makes the token briefly visible in `ps` while the check runs. This
+   is accepted, not mitigated: the probe runs only on the operator's own host
+   during install verification — the same host whose Keychain and `state.json`
+   already hold the token — the pattern is on the process table only for the
+   check's own lifetime, and no log or evidence file captures it. It adds no
+   exposure beyond the host that already owns the secret.

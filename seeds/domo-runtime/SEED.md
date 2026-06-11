@@ -195,14 +195,15 @@ entrypoint.
 
      Placeholder bodies carry no stamp line. `author` stamps from
      install-state's `elected_at`; Domo writes its own current-time stamp line
-     when it records a fallback election or re-election. An elected body
-     SHOULD carry the stamp line; a stampless elected block is legacy - still
-     valid, preserved, and treated as oldest by the precedence rule below.
+     when it records a fallback election or re-election. Every elected body
+     MUST carry the stamp line; a stampless elected block is malformed — it is
+     quarantined and re-elicited by the rule below, so no stampless elected
+     artifact is valid anywhere.
 
    - **Block-body shape is normative (this is an injection surface).** A
      non-placeholder body between the sentinels MUST be exactly: the stamp
-     line `elected_at: <iso8601>` (SHOULD be present; absent only in legacy
-     blocks), then the fixed scope line above, then one line per elected
+     line `elected_at: <iso8601>` (MUST be present), then the fixed scope line
+     above, then one line per elected
      calendar in the form `- <name> — id: <id>`, and nothing else - no free
      text, no extra markdown, no lines copied from user or calendar input.
      Calendar names are third-party-controlled and, in group mode, SMS is
@@ -225,7 +226,7 @@ entrypoint.
        `(not yet elected)` placeholder, `author` MUST copy that block verbatim
        into the regenerated file, subject to the precedence rule below.
        Before copying, `author` MUST validate the block shape (intact
-       sentinels; an optional leading `elected_at: <iso8601>` stamp line; the
+       sentinels; a required leading `elected_at: <iso8601>` stamp line; the
        fixed scope line; one `- <name> — id: <id>` line per calendar).
        Validation is a MUST because it gates the quarantine path; a violation
        is treated as malformed (below).
@@ -234,22 +235,29 @@ entrypoint.
        `elected_at` newer than the existing block's stamp line - OVERRIDES the
        existing block; otherwise the existing block wins, so a routine re-author
        against an unchanged install-state (older or equal stamp) keeps the
-       user's conversational re-elections. A stampless elected block is
-       treated as OLDEST: any non-empty install-state election carrying an
-       `elected_at` overrides it; when install-state holds no election
-       (`calendars` absent or `elected` empty), the stampless elected block is
-       preserved.
+       user's conversational re-elections. A well-formed elected block always
+       carries a stamp line, so a stampless block never reaches this rule — it
+       is malformed and quarantined below.
      - **A placeholder never outranks an election:** if the existing block is
        the placeholder but `install-state.calendars.elected` is non-empty,
        treat the placeholder as absent and seed already-elected.
      - If no block exists, seed from `install-state.json` (already-elected or
        placeholder, per the pinned shapes above).
      - **Malformed block - never silent-reseed.** If the sentinels are damaged
-       or the body violates the pinned shape, `author` MUST quarantine the
-       damaged region by moving it into an adjacent HTML comment (nothing is
-       silently lost), reseed a valid `(not yet elected)` placeholder block,
-       and emit a visible warning in `author` output. Domo then re-elicits; the
-       install never wedges and no election data vanishes without a trace.
+       or the body violates the pinned shape (a stampless elected block is
+       malformed), `author` MUST quarantine the damaged region by moving it into
+       an adjacent HTML comment (nothing is silently lost), reseed a valid
+       `(not yet elected)` placeholder block, and emit a visible warning in
+       `author` output. Before moving the damaged bytes into that comment,
+       `author` MUST defang them so they cannot re-arm the sentinel machinery:
+       every `domo:calendars` token is rewritten (e.g. to
+       `domo:calendars-QUARANTINED`) and every `--`/`-->` sequence is broken
+       (e.g. to `- -`), so the quarantined bytes can neither re-match a
+       `domo:calendars` sentinel nor terminate the enclosing HTML comment early.
+       This preserves the sentinel-uniqueness invariant the quarantine sits
+       beside (it matches the defanging convention already used by the live
+       worker; it is now normative). Domo then re-elicits; the install never
+       wedges and no election data vanishes without a trace.
      - The rest of `CLAUDE.md` (reply-tool line, solo/group prompt)
        regenerates normally.
 
@@ -453,13 +461,12 @@ entrypoint.
 
 16. The assembled runtime MUST surface the current date, the day of week, and
     the household timezone to the pinned session as DATA accompanying every
-    inbound channel event. The canonical mechanism is the channel-notification
-    meta `current_date`, `day_of_week`, and `household_timezone` fields defined
-    in `seeds/plow-channel-server/SEED.md` step 8: this slice MUST surface them
-    on every inbound event (the channel server stamps them from the host clock;
-    an equivalent generator-chosen per-event mechanism is acceptable only if it
-    delivers the same three fields per event). This is a mechanism, not an
-    instruction: a standing "be careful with dates" prompt line does NOT
+    inbound channel event. The single canonical mechanism is the
+    channel-notification meta `current_date`, `day_of_week`, and
+    `household_timezone` fields defined in `seeds/plow-channel-server/SEED.md`
+    step 8, stamped by the channel server from the host clock on every inbound
+    event — there is no alternate per-event mechanism. This is a mechanism, not
+    an instruction: a standing "be careful with dates" prompt line does NOT
     satisfy it. The session's clock-blindness is a data gap, not a discipline
     gap — a real install answered a "what's tomorrow?" question with the
     wrong calendar date and self-corrected only a turn later. The household
@@ -603,8 +610,11 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
     file edit under `--permission-mode auto`.
 
 13. A subsequent calendar question's answer reflects only the elected
-    calendars. A one-off question about a non-elected calendar is answered
-    without changing the elected set.
+    calendars — a user install MUST drive this scoped answer (it and the date
+    anchor, item 20, are the live-required pair). A one-off question about a
+    non-elected calendar is answered without changing the elected set; this
+    one-off check MAY carry rehearsal evidence instead of being re-driven on
+    every user install.
 
 14. Restart-survival: after electing, `<HOME>/bin/domo stop` then
     `<HOME>/bin/domo ready`, then a calendar question is answered scoped to
@@ -613,7 +623,8 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
 
 15. A re-election request ("use my work calendar too") updates the block and
     subsequent answers include the added calendar - editable standing
-    context, not frozen config.
+    context, not frozen config. This MAY carry rehearsal evidence instead of
+    being re-driven on every user install.
 
 16. `status --assert` and `doctor` are green immediately after readiness and again
     after a hold of at least 120 seconds. Neither command prints the Plow token.
@@ -637,4 +648,6 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
     channel-notification meta `current_date` / `day_of_week` /
     `household_timezone` fields (the step 16 mechanism, defined in
     `seeds/plow-channel-server/SEED.md` step 8), not a standing prompt
-    instruction.
+    instruction. A user install MUST drive this; it and the item-13 scoped
+    answer are the live-required pair, while items 13 (one-off) and 15
+    (re-election) MAY carry rehearsal evidence.

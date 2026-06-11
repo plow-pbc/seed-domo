@@ -20,7 +20,11 @@ Hard dependencies:
   `git rev-parse HEAD`, and read that SEED's
   `## Objects` and `## Actions` as the only Plow API surface. This Domo SEED
   MUST NOT restate Plow endpoints, payload schemas, response schemas, or frame
-  schemas.
+  schemas. In a composed install the root has already cloned, audited, and
+  recorded this contract; the root-carried clone path + recorded commit satisfy
+  this requirement, and the slice reads from that clone rather than cloning
+  again. Re-clone only when this slice is installed standalone — standalone
+  verifiability is why the per-slice clone path is kept.
 - **Plow Chat API account** - the user MUST be able to complete the contract's
   activation flow. User installs use the contract's production base URL; dev
   rehearsals bake the local Plow base URL before generation.
@@ -87,10 +91,12 @@ runtime.
 The installing agent MUST generate this slice into the baked Domo home. It MUST
 NOT copy or depend on any committed activation script.
 
-1. Clone `https://github.com/plow-pbc/seed-plow-chat` from `origin/main` into a
-   scratch directory and read its `## Objects` and `## Actions` before writing
-   any helper. Treat that SEED as the only source for Plow calls, payloads,
-   responses, and WebSocket frames.
+1. Read the Plow contract SEED's `## Objects` and `## Actions` before writing
+   any helper — in a composed install from the root-carried clone, or, when this
+   slice is installed standalone, from a fresh `origin/main` clone of
+   `https://github.com/plow-pbc/seed-plow-chat` in a scratch directory. Treat
+   that SEED as the only source for Plow calls, payloads, responses, and
+   WebSocket frames.
 2. Resolve the baked home and Plow base URL before generation. Create:
 
    ```text

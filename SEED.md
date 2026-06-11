@@ -118,7 +118,10 @@ and `ref/` still ships only `verify.sh`:
   form-section states (locked / unlocked / answered), and live values.
   `GET /status?retry=calendars` is the read-only re-trigger for a failed
   calendar list call — it re-runs the read, writes nothing, and leaves the
-  bounded rule's single write untouched. Query strings are never logged.
+  bounded rule's single write untouched. It carries an in-flight guard: while a
+  calendar list call is already running, a repeated retry is a no-op that
+  returns the in-progress state rather than stacking a second concurrent probe.
+  Query strings are never logged.
 - `POST /answers` is the ONE write. It accepts the setup-form submission (or
   per-section partial submissions, each stamped at its own POST), validates
   server-side per the sanitization rules below, and atomically writes the
@@ -149,9 +152,10 @@ and `ref/` still ships only `verify.sh`:
 - Resume: on any re-entry after an interruption, the installing agent MUST
   verify endpoint liveness; if the endpoint is dead, restart it on a new
   ephemeral port with a NEW install token, re-surface the URL per the tier
-  rules, and re-render answered sections from the durable answers file. A
-  stale open tab tells the user to use the new link rather than failing
-  silently.
+  rules, and re-render answered sections from the durable answers file. A stale
+  open tab cannot learn the new port or token, so it renders baked
+  "stale — check chat/terminal for the current link" copy rather than failing
+  silently or polling a dead endpoint.
 
 Setup-form sanitization is normative — the form is an injection surface.
 Member names and any future free text flow into the workspace prompt
@@ -191,6 +195,18 @@ Member names and any future free text flow into the workspace prompt
   name is still attacker-chosen text inside a prompt — sanitization narrows it
   to inert words; the delimited-data convention plus reply-tool discipline is
   the containment.
+- The served page is an output-injection surface, not only a prompt surface.
+  EVERY dynamic value rendered into the page — household and member names,
+  status strings, AND calendar names returned by the connector
+  (third-party-controlled, explicitly included) — MUST be HTML-escaped or
+  rendered as a text node, never interpolated as markup. Independently, the
+  endpoint applies the strip set above (C0/C1 controls, bidi, zero-width, NFC)
+  to each calendar name when it holds the `list_calendars` result, so a hostile
+  name is inert before it can reach either the page or the answers file. The
+  threat is concrete: a script-bearing calendar title rendered as markup would
+  execute in the page's origin, read the install token out of `location.href`,
+  and forge a `POST /answers` — so calendar names are escaped on output and
+  stripped at hold time, never trusted as page structure.
 
 The external Plow API contract SEED is the single declaring site for the Plow
 API surface consumed by Domo. It is cloned, audited, and verified before any
@@ -240,8 +256,12 @@ this ordering removes that wait.)
   current install. It records each dependency and slice status, terminal failures,
   non-secret user-action values, the installer page and setup endpoint start
   timestamps (recorded retroactively once the report exists) and the
-  degradation tier in effect, and union Verification evidence. It MUST NOT
-  contain the install token.
+  degradation-tier history as a list of transitions (a page may start in tier 1
+  and fall to tier 3), and union Verification evidence; the union judges the
+  installer page against the FINAL tier. In the no-page tiers (3 and 4) the
+  answers the agent collects in chat MUST persist here as non-secret values —
+  this report is the durable never-re-ask record across resume, exactly as the
+  answers file is for the served tiers. It MUST NOT contain the install token.
 - **Installer page** - the generated install UI. In the primary tier it is
   served by the setup endpoint at the loopback+token URL, polls `GET /status`
   (no meta-refresh), and hosts exactly one interactive area, the setup form;
@@ -286,11 +306,17 @@ this ordering removes that wait.)
   MUST hold 1–8 entries when `mode` is `"group"`. `calendars.elected`
   is an array of `{ name, id }` whose names are resolved server-side from the
   endpoint's held `list_calendars` result (a tampered name can never ride in
-  on a valid id); absent or empty means no install-time election, and an
-  explicit skip records `"elected": []`. Under per-section submission the
+  on a valid id). Absent or empty means no install-time election (Domo's
+  first-conversation fallback elects); `"elected": []` is recorded ONLY by the
+  explicit Skip button. An untouched calendar section is not empty — the
+  pre-checked primary `{ name, id }` rides in as the election. Under
+  per-section submission the
   endpoint stamps each section at its own POST; `calendars.elected_at` is
   stamped at the calendar-section POST and is load-bearing for the calendar
   election precedence rule owned by `seeds/domo-runtime/SEED.md`.
+  `mode_submitted_at` is reserved for a post-merge consumer (the recorded
+  follow-up that would ignore stale `activation_detail` older than it); nothing
+  reads it today.
 - **Claude instance slice** - `seeds/claude-instance/SEED.md`, owner of isolated
   Claude subscription auth, first-run prompt immunity, metered-key-unset launch
   discipline, and logout helper.
@@ -300,9 +326,11 @@ this ordering removes that wait.)
   the generated MCP channel server, `claude/channel` capability, `reply` tool,
   inbound notification delivery, WebSocket liveness, and token-redaction
   discipline for its surface.
-- **Plow activation slice** - `seeds/plow-activation/SEED.md`, owner of
-  solo/group election, Plow activation helpers, local Plow state, install state,
-  and server-side chat teardown usage.
+- **Plow activation slice** - `seeds/plow-activation/SEED.md`, transcriber of
+  the root-carried solo/group answers into `install-state.json`, and owner of
+  the Plow activation helpers, local Plow state, install state, and server-side
+  chat teardown usage. The mode election itself is made at the root decision
+  moment; this slice records the carried answer, it does not run an interview.
 - **Domo runtime slice** - `seeds/domo-runtime/SEED.md`, owner of workspace
   authoring, channel registration, pinned-session daemon startup, readiness
   gating, the first ready text, operator CLI, status/logs/stop/doctor, and reset
@@ -386,7 +414,13 @@ them.)
 
 The setup form is the moment's surface. Sections unlock in order; a section
 renders locked until its prerequisites are met, and earlier sections are
-answerable from first paint.
+answerable from first paint. Each section carries a recorded deadline (the
+auto-resume waits are bounded polls, above): if the moment closes with a
+section still unanswered — the user never submitted it — that section defaults
+to its first-class skip rather than blocking the install. For the calendar
+section a never-submitted default-to-skip records the explicit-skip
+`"elected": []` fallback; this is distinct from an untouched submit, which
+carries the pre-checked primary.
 
 Whenever a section the user is plausibly waiting on is pending, the page MUST
 narrate what the agent is actually doing, rendered from `install-report.json`
@@ -434,15 +468,21 @@ The sections:
    have both flipped. It renders the user's real calendars as multi-select
    checkboxes, the primary calendar pre-checked as the suggested default —
    the primary is the calendar whose id equals the connected account's email
-   address — from the installing agent's own connector call: owned by this
-   root, not a slice helper, and bounded by the same 90-second timeout the
-   calendar probe pins. On call failure or timeout the section says so and
-   offers a retry (the read-only `GET /status?retry=calendars` re-trigger)
-   alongside the skip path; it MUST NOT render stale or invented calendars. Ids are carried; names resolve server-side per
-   `## Dependencies`. **"Skip — Domo will ask me by text" is a first-class
-   answer** that records `"elected": []` in the answers file; submitting the
-   form without touching the section is the same answer, and the section says
-   so plainly.
+   address — from the installing agent's own connector call. That call is run
+   with `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN
+   CLAUDE_CONFIG_DIR="<HOME>/.claude"` so it elects against the same isolated
+   subscription account the rest of the install uses and can never fall back to
+   metered billing or a wrong account; it is owned by this root, not a slice
+   helper, and bounded by the same 90-second timeout the calendar probe pins.
+   On call failure or timeout the section says so and offers a retry (the
+   read-only `GET /status?retry=calendars` re-trigger) alongside the skip path;
+   it MUST NOT render stale or invented calendars. Ids are carried; names
+   resolve server-side per `## Dependencies`. Submitting the form without
+   touching this section is NOT a skip: because the primary is pre-checked, an
+   untouched submit carries that primary `{name, id}` as the election. **"Skip
+   — Domo will ask me by text" is a first-class button** — and the ONLY way to
+   record `"elected": []` — which hands the election to Domo's
+   first-conversation fallback. The section states both plainly.
 5. **Activation** — unlocks only when the activation helpers are generated
    AND the calendar election section is answered or explicitly skipped. This
    is the freeze point: everything `plow-activation` transcribes into
@@ -453,15 +493,17 @@ The sections:
    <code>` string with a copy button, the send-to number, an `sms:` deep link
    pinned in the macOS-Messages-compatible form
    `sms:<number>&body=<url-encoded full string>`, a live countdown rendered
-   from the recorded code expiry, and a verified flip when redeem lands. In
-   group mode the owner's row renders first; member `VERIFY-` rows render
-   only after the generated WebSocket listener is up — the
+   from the recorded `code_expires_at` — the contract's code TTL clock, NOT the
+   helper's local `REDEEM_TIMEOUT_SECONDS` poll bound — and a verified flip
+   when redeem lands. In group mode the owner's row renders first; member
+   `VERIFY-` rows render only after the generated WebSocket listener is up — the
    codes-after-listener-up invariant is unchanged, and only the member rows
    wait on the listener, so the section cannot deadlock on a listener that
    comes up during the activation run. Member codes are relayed by the owner
-   to members; the page says so. An expired, never-redeemed code is re-minted
-   by the activation slice and the page MUST replace it — a dead code is
-   never displayed.
+   to members; the page says so. When a code's redeem window lapses un-redeemed
+   the activation helper exits 75 — that is the helper's bound, it does not
+   self-loop — and the installing AGENT re-mints by re-invoking the activation
+   path; the page MUST replace the dead code, which is never displayed.
 
 ### Domo is activated
 
@@ -508,17 +550,23 @@ MUST NOT regenerate slices or build a second instance.
    page and setup endpoint (including the degradation tier in effect), and
    root union Verification.
 
-3. The installer page item is tier-aware, judged for the tier the install
-   actually ran in (recorded in `install-report.json`):
+3. The installer page item is tier-aware, judged for the FINAL tier the install
+   settled in (the tier-transition history is recorded in `install-report.json`):
 
    - Served page (tiers 1–2): the page was served at the loopback+token URL,
      polled `GET /status`, and carried NO meta-refresh tag; it was up before
      slice 1, proven by the retroactively recorded page and endpoint start
      timestamps; its one setup-form area's answers round-tripped through the
      carried route into the generated instance; and the activation it
-     surfaced is the activation the user completed. At terminal state the
-     endpoint is dead — a connection attempt is refused — and no endpoint
-     child process survives.
+     surfaced is the activation the user completed. The endpoint's negative
+     contract holds: a request without the install token is rejected, a
+     valid-token request to an unknown route is rejected, a valid-token
+     non-`POST /answers` write method is rejected, and ONLY `POST /answers`
+     mutates `<HOME>/.install/answers.json` — the 403/404/405 rejection-status
+     precedence pinned in `## Dependencies` (tokenless → 403 on any route;
+     valid token + unknown route → 404; valid token + wrong method on
+     `/answers` → 405) is proven. At terminal state the endpoint is dead — a
+     connection attempt is refused — and no endpoint child process survives.
    - Static fallback page (tier 3): exists at `<HOME>/install-dashboard.html`
      with a meta-refresh tag, reflects the statuses in `install-report.json`,
      and carries the copy-paste login command plus the full
@@ -541,11 +589,20 @@ MUST NOT regenerate slices or build a second instance.
 5. Calendar seam: the generated Calendar check reports `CONNECTED` only from a
    real strict `tool_use` to matching `tool_result` `tool_use_id` pair for the
    Google Calendar connector, and a text-only transcript remains `PENDING`.
+   Connector-watch timing is report-verifiable: the connector section rendered
+   no URL while locked, the probe ran exactly once at login-green, that one
+   result fed all three consumers (the section flip, the calendar-election
+   unlock, and the calendar-connector slice's pending verification), and it was
+   NOT re-run between the calendar answer and activation.
 
 6. Plow channel seam: the generated MCP channel server is installed where
    `domo-runtime` consumes it, secret state is chmod 600, the real generated
    operator starts and stays green through `status --assert`, a real `reply`
    lands in the Plow chat with `status == "sent"`, and token hygiene is clean.
+   Present-state boot: launched with valid `state.json` already on disk — the
+   common decision-moment ordering — the server initializes cleanly and
+   connects immediately, with no crash and no 3-second re-poll detour before
+   the first connection attempt.
 
 7. Plow activation seam: activation surfaces the full `Plow Activate: <code>`
    string and send-to number, a bare code does not verify, group mode verifies
