@@ -215,12 +215,12 @@ sitting while an earlier slice's generated artifacts are already complete.
 Generation ordering carries one additional pin. Slice 1 (`claude-instance`)
 consumes nothing from the Plow contract, and the login gate is the decision
 moment's longest human action — so after the page is up, the installing
-agent MUST generate slice 1 and surface its login command in the page's
-login watch section BEFORE the contract clone. The contract clone, audit,
-and the Plow-consuming slices follow and MAY overlap the user's login. (A
-real install spent 5m22s of login-section dead time running the clone, the
-contract audit, and the OpenAPI cross-check first; this ordering removes
-that wait.)
+agent MUST generate slice 1, run its `claude auth login` helper, and surface
+the captured auth URL in the page's login watch section BEFORE the contract
+clone. The contract clone, audit, and the Plow-consuming slices follow and MAY
+overlap the user's login. (A real install spent 5m22s of login-section dead
+time running the clone, the contract audit, and the OpenAPI cross-check first;
+this ordering removes that wait.)
 
 ## Objects
 
@@ -332,10 +332,13 @@ that wait.)
    the degradation tier in effect), and root union Verification. Record the
    page and endpoint start timestamps retroactively. The page hydrates from
    the report from then on.
-4. Generate slice 1 (`seeds/claude-instance`) and surface its generated login
-   command in the page's login watch section — BEFORE the contract clone.
-   Slice 1 has no Plow dependency, and surfacing login first hands the user
-   the moment's longest action while the agent keeps generating.
+4. Generate slice 1 (`seeds/claude-instance`), run its login helper
+   (`claude auth login`), capture the auth URL it emits, and push that URL into
+   the page's login watch section as a "log in with Claude" link — BEFORE the
+   contract clone. In the no-page fallback tiers the same captured URL (or the
+   terminal login command) is surfaced in terminal/chat. Slice 1 has no Plow
+   dependency, and surfacing login first hands the user the moment's longest
+   action while the agent keeps generating.
 5. Clone, audit, and verify `https://github.com/plow-pbc/seed-plow-chat`. Record
    the clone path and commit in `install-report.json`. This step and the
    Plow-consuming slice generations MAY overlap the user's login.
@@ -402,12 +405,18 @@ The sections:
    owner and is automatically included; member names list the other household
    members. `members` follows the answers-file rule: `[]` for solo, 1–8 names
    for group.
-2. **Claude login (watch, not an input)** — renders the generated login
-   command with a copy button and a live watching status that flips to logged
-   in when the four-field auth gate passes. When auth is already satisfied at
-   render time, the section renders already logged in, nothing to do, and
-   never asks. The login itself stays in the terminal and browser; no
-   credential ever touches the page.
+2. **Claude login (watch, not an input)** — the installing agent runs slice 1's
+   login helper (`claude auth login`), captures the auth URL it emits, and the
+   section renders that URL as a page-surfaced "log in with Claude" link (one
+   click opens the browser) plus a live watching status that flips to logged in
+   when the four-field auth gate passes. `claude auth login` auto-detects the
+   browser completion, so the user only finishes the browser step; no code
+   paste is needed in the normal case. When auth is already satisfied at render
+   time, the section renders already logged in, nothing to do, and never asks.
+   In the no-page fallback tiers the same captured URL — or the terminal login
+   command — is surfaced in terminal/chat. The credential is written by
+   `claude auth login` into the isolated config; no credential ever touches the
+   page.
 3. **Google Calendar connector (watch, not an input)** — renders LOCKED, with
    no copyable URL, until the login watch is green: the probe cannot run
    unauthenticated, so an earlier URL is a dead end. The connector probe runs
