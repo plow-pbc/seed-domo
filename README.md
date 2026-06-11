@@ -6,22 +6,22 @@ Claude subscription, reads your texts, reasons, acts, and texts back.
 ## Purpose
 
 **Domo** is a personal household assistant that runs as **one persistent
-`claude --channels` session** on a Mac, billed against your **Claude
-subscription** rather than a metered API key. A real Plow Chat conversation is
-wired to that session, so you talk to Domo by text. Domo receives a message,
-uses Claude Code and account-level tools such as Google Calendar, then replies
-back into the same texting thread.
+Claude session with the Plow chat channel loaded**
+(`--dangerously-load-development-channels server:plow-chat`) on a Mac, billed
+against your **Claude subscription** rather than a metered API key. A real
+Plow Chat conversation is wired to that session, so you talk to Domo by text.
+Domo receives a message, uses Claude Code and account-level tools such as
+Google Calendar, then replies back into the same texting thread.
 
-Domo is delivered as a **SEED**: a descriptive knowledge base plus generated
-runtime artifacts that an installing agent uses to stand up a live Domo. This
-slice installs a solo or group household chat. The install is a front-loaded
-action board: the agent does the API calls and verification, while you only
-complete the human-only actions.
+Domo is delivered as a **SEED**: a prose specification that an installing
+agent reads to *generate* a live Domo, solo or group. The install clusters
+everything that needs you into **one decision moment** on a generated
+installer page; the agent does everything else.
 
-`ref/` currently holds the remaining monolith implementation reference while the
-repo is being converted into sub-SEEDs. Converted slices live under `seeds/` and
-instruct the installing agent to generate their runtime into the baked Domo
-home.
+`ref/` ships exactly one file, `verify.sh`, the structural conformance
+checker — the conversion to composed sub-SEEDs is complete. All runtime is
+generated at install time into the baked Domo home by the slices under
+`seeds/`.
 
 ## Install
 
@@ -41,35 +41,46 @@ git clone https://github.com/plow-pbc/seed-domo && cd seed-domo
 Then run `/seed-install .`, or open the checkout and ask the agent to install
 this SEED.
 
-The SEED install action is the install path. It pins the persistent Domo home
-outside the checkout:
+The headline of the install is the **generated installer page** and the **one
+decision moment**: moments after kickoff the agent generates and opens a local
+installer page — even before anything else completes — works alone while the
+page narrates progress, then gathers everything that needs you into a single
+sitting (household setup, login and Calendar connector watches, calendar
+selection, texting the activation message), and runs unattended to
+completion. The page is generated at install time and served from a
+loopback-only local endpoint; if no browser is available the install degrades
+to a static page or plain chat and never blocks.
 
-```bash
-export DOMO_HOME="$HOME/.domo"
-```
+The agent resolves the persistent Domo home once, as an install constant
+(default `~/.domo`, outside the checkout), and bakes that absolute path into
+every generated file. No environment variable is read at runtime.
 
-Then the installing agent follows `SEED.md`, installs converted sub-SEEDs first,
-and runs the generated helpers in order:
+The installing agent follows `SEED.md` and installs the five sub-SEEDs
+leaves-first, generating each slice's runtime into the baked home:
 
-1. **Login.** `seeds/claude-instance/SEED.md` generates isolated Claude
-   subscription auth helpers under `$DOMO_HOME/runtime/claude-instance` and
-   verifies `$DOMO_HOME/.claude`.
-2. **Calendar.** `seeds/calendar-connector/SEED.md` generates connector probe
-   helpers under `$DOMO_HOME/runtime/calendar-connector` and verifies the
-   claude.ai Google Calendar connector for that same account.
-3. **Activation.** `seeds/plow-activation/SEED.md` generates Plow text
-   activation helpers under `$DOMO_HOME/runtime/plow-activation`, supports solo
-   or group mode, and writes chmod-600 channel state.
-4. **Runtime.** `seeds/domo-runtime/SEED.md` generates
-   `$DOMO_HOME/bin/domo` and runtime helpers under
-   `$DOMO_HOME/runtime/domo-runtime`; it authors the workspace, starts the
-   pinned-session daemon, gates readiness on host channel registration, and
-   sends the first ready text.
+1. **Login.** `seeds/claude-instance/SEED.md` — isolated Claude subscription
+   auth helpers under `~/.domo/runtime/claude-instance`, verifying
+   `~/.domo/.claude`.
+2. **Calendar.** `seeds/calendar-connector/SEED.md` — connector probe helpers
+   under `~/.domo/runtime/calendar-connector`, verifying the claude.ai Google
+   Calendar connector on the same account.
+3. **Channel server.** `seeds/plow-channel-server/SEED.md` — the generated MCP
+   channel server under `~/.domo/runtime/plow-channel-server` that bridges the
+   daemon to the Plow chat: the `reply` tool out, inbound texts in.
+4. **Activation.** `seeds/plow-activation/SEED.md` — Plow text activation
+   helpers under `~/.domo/runtime/plow-activation`, solo or group mode,
+   writing chmod-600 channel state and transcribing the decision-moment
+   answers into install state.
+5. **Runtime.** `seeds/domo-runtime/SEED.md` — `~/.domo/bin/domo` and runtime
+   helpers under `~/.domo/runtime/domo-runtime`; authors the workspace, starts
+   the pinned-session daemon, gates readiness on host channel registration,
+   and sends the first ready text.
 
-The only things you do are the interactive subscription login, the browser
-connector toggle, and texting the activation message from the relevant phone.
-Tokens and one-time codes stay in chmod-600 gitignored state files and are never
-printed as secrets.
+The only things you do are the setup form on the installer page, the
+interactive subscription login if it is needed, the browser connector toggle
+if it is needed, and texting the activation message from the relevant phone.
+Tokens and one-time codes stay in chmod-600 gitignored state files and are
+never printed.
 
 ## Usage
 
@@ -85,8 +96,8 @@ $HOME/.domo/bin/domo stop    # stop daemon and scoped channel children
 $HOME/.domo/bin/domo reset   # delegated cleanup/logout plus guarded local removal
 ```
 
-`$HOME/.domo/bin/domo logs` renders inbound texts, replies, and tool activity.
-Add `--raw` for the underlying PTY capture or `--no-follow` for a one-shot read.
+`$HOME/.domo/bin/domo logs` renders inbound texts, replies, and tool activity
+from the pinned-session transcript.
 
 ## Security Posture
 

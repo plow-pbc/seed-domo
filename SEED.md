@@ -49,7 +49,9 @@ the page and endpoint start timestamps are recorded retroactively into
 `install-report.json` once it exists. The page start timestamp is tier-aware
 first availability: in tiers 1–2 it is the first successful serve (the first
 HTTP 200 in the endpoint log); in tier 3 it is the static file's write time;
-generation time MAY be recorded as a secondary value. Retroactively recorded
+in tier 4 there is no page-start record — record only the tier and, at the
+end, the terminal snapshot's modification time. Generation time MAY be
+recorded as a secondary value. Retroactively recorded
 timestamps MUST derive from verifiable artifacts — the endpoint log, file
 modification times — never from agent recollection.
 
@@ -98,7 +100,9 @@ Page availability degrades through four tiers, all non-fatal:
 
 In tiers 1 and 2 no file exists at `<HOME>/install-dashboard.html` until
 terminal state — the served page is the surface; the static snapshot is
-written to that path at teardown.
+written to that path at teardown. Page generation MUST clear or supersede any
+PRIOR install's terminal snapshot at that path, so a stale "Domo is live"
+page can never shadow a running install.
 
 Whatever the tier, the install MUST continue and `install-report.json` remains
 the canonical progress record.
@@ -446,8 +450,9 @@ MUST NOT regenerate slices or build a second instance.
    test double.
 
 2. `install-report.json` exists at the repo root, not under `<HOME>`, and records
-   non-secret statuses for the Plow contract, all five slices, dashboard
-   generation, and root union Verification.
+   non-secret statuses for the Plow contract, all five slices, the installer
+   page and setup endpoint (including the degradation tier in effect), and
+   root union Verification.
 
 3. The installer page item is tier-aware, judged for the tier the install
    actually ran in (recorded in `install-report.json`):

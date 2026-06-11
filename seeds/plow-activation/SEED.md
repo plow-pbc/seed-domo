@@ -291,7 +291,9 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
 11. The decision-moment answers are transcribed. `<HOME>/install-state.json`
     carries `interview.mode` and `interview.members` matching the carried
     answers and the verbatim top-level `calendars` pass-through including
-    `elected_at` (or `elected == []` for an explicit skip). On a re-install
+    `elected_at` (an explicit skip is `elected == []` and still carries its
+    `elected_at` stamp — the root stamps every calendar-section POST,
+    including skips). On a re-install
     whose activation short-circuited against matching existing state, the
     `calendars` field still reflects this install's carried answers while the
     chat UID is unchanged.
