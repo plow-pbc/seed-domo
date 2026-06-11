@@ -46,7 +46,12 @@ clone, before `install-report.json` is fully populated, before any slice — so
 it pops up ASAP after kickoff, even in a loading state. Only then is
 `install-report.json` initialized; the page hydrates from it from then on, and
 the page and endpoint start timestamps are recorded retroactively into
-`install-report.json` once it exists.
+`install-report.json` once it exists. The page start timestamp is tier-aware
+first availability: in tiers 1–2 it is the first successful serve (the first
+HTTP 200 in the endpoint log); in tier 3 it is the static file's write time;
+generation time MAY be recorded as a secondary value. Retroactively recorded
+timestamps MUST derive from verifiable artifacts — the endpoint log, file
+modification times — never from agent recollection.
 
 The installer page and setup endpoint are governed by this bounded rule:
 
@@ -79,14 +84,19 @@ Page availability degrades through four tiers, all non-fatal:
    clickable loopback URL, token included; this tier is the ONLY surface that
    may carry the tokened URL. The full experience resumes the moment the user
    opens it. Recorded in `install-report.json`.
-3. Endpoint fails — regenerate the static display-only page (meta-refresh,
-   `file://` surfaced) from `install-report.json` as steps complete, and host
+3. Endpoint fails — regenerate the static display-only page at
+   `<HOME>/install-dashboard.html` (meta-refresh, `file://` surfaced) from
+   `install-report.json` as steps complete, and host
    all questions in chat. Recorded in `install-report.json`. The static page
    MUST include a step list with live statuses, copy-paste blocks for the
    generated Claude login command, the full `Plow Activate: <code>` string,
    and the send-to number, and no bearer token, Claude token, API key,
    password, or secret.
 4. No browser or opener and no endpoint — terminal/chat carries everything.
+
+In tiers 1 and 2 no file exists at `<HOME>/install-dashboard.html` until
+terminal state — the served page is the surface; the static snapshot is
+written to that path at teardown.
 
 Whatever the tier, the install MUST continue and `install-report.json` remains
 the canonical progress record.
@@ -105,7 +115,11 @@ and `ref/` still ships only `verify.sh`:
   server-side per the sanitization rules below, and atomically writes the
   answers file. Every other write is rejected.
 - A per-install random install token is embedded in the page URL and required
-  on every request; requests without it are rejected. The token is
+  on every request; requests without it are rejected. Rejection statuses are
+  pinned with this precedence: the token check runs first, so a tokenless
+  request is rejected `403` on every route; with a valid token, an unknown
+  route is `404`; with a valid token, a non-POST write method on `/answers`
+  is `405`. The token is
   CSRF/DNS-rebinding hygiene for a loopback service, not a secret under the
   token rules — but it MUST never appear in `install-report.json` or any log,
   and chat MAY carry the tokened URL only in the auto-open-failure tier.
@@ -113,9 +127,10 @@ and `ref/` still ships only `verify.sh`:
   posture).
 - Lifetime: started with the skeleton, killed at terminal state (success or
   failure); a static snapshot page remains at `<HOME>/install-dashboard.html`.
-  `<HOME>/.install/` is KEPT after terminal state, chmod 600 throughout — it
-  is the resume/audit record. `answers.json` holds non-secret personal data
-  (member names), which is why 600; nothing in it is a secret.
+  `<HOME>/.install/` is KEPT after terminal state — the directory chmod 700,
+  every file within it chmod 600 — it is the resume/audit record.
+  `answers.json` holds non-secret personal data (member names), which is why
+  the tight modes; nothing in it is a secret.
 - The installing agent polls the answers file; it MUST NOT block synchronously
   on the form.
 
@@ -193,9 +208,10 @@ complete.
   served by the setup endpoint at the loopback+token URL, polls `GET /status`
   (no meta-refresh), and hosts exactly one interactive area, the setup form;
   in the endpoint-failure tier it is the static display-only meta-refreshed
-  file regenerated from `install-report.json` and surfaced as `file://`; at
-  terminal state a static snapshot remains at `<HOME>/install-dashboard.html`.
-  Every tier may show only non-secret copy-paste values.
+  file at `<HOME>/install-dashboard.html` regenerated from
+  `install-report.json` and surfaced as `file://`; at terminal state a static
+  snapshot remains at that same path. Every tier may show only non-secret
+  copy-paste values.
 - **Setup endpoint** - the generated, install-lifetime-only, loopback-only
   local service under `<HOME>/.install/`. It serves the installer page at
   `http://127.0.0.1:<ephemeral-port>/?t=<install-token>`, answers
@@ -227,8 +243,9 @@ complete.
   }
   ```
 
-  `mode` is `"solo" | "group"`. `members` is an array of
-  `{ "name": "<sanitized>" }`, group only, 1–8 entries. `calendars.elected`
+  `mode` is `"solo" | "group"`. `members` is always present: an array of
+  `{ "name": "<sanitized>" }` that MUST be `[]` when `mode` is `"solo"` and
+  MUST hold 1–8 entries when `mode` is `"group"`. `calendars.elected`
   is an array of `{ name, id }` whose names are resolved server-side from the
   endpoint's held `list_calendars` result (a tampered name can never ride in
   on a valid id); absent or empty means no install-time election, and an
@@ -338,7 +355,10 @@ MUST NOT regenerate slices or build a second instance.
    token, password, API key, bearer value, or secret-looking credential. If the
    dashboard could not be generated or opened, `install-report.json` records the
    non-fatal fallback and the same copy-paste values are surfaced in
-   terminal/chat.
+   terminal/chat. This item applies to the tier-3/4 static fallback page and
+   the terminal snapshot; the tier-1/2 served page carries no meta-refresh and
+   is governed by the `## Dependencies` bounded rule, pending this union
+   item's per-tier rewrite.
 
 4. Claude instance seam: the generated isolated config is logged in with
    `rc == 0`, `loggedIn == true`, `authMethod == "claude.ai"`, and
