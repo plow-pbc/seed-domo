@@ -118,8 +118,10 @@ entrypoint.
    ```
 
 2. Generate every helper in `<HOME>/runtime/domo-runtime` and the operator
-   entrypoint `<HOME>/bin/domo` as chmod-700 executable files. Each generated
-   file MUST contain the baked absolute `<HOME>` literal. Generated files MUST
+   entrypoint `<HOME>/bin/domo` as chmod-700 executable files. Generated files
+   that reference install paths MUST carry them as baked absolute literals —
+   a derived absolute path such as the host-log root satisfies this, and a
+   helper that is a pure function of its argv needs none. Generated files MUST
    NOT read `DOMO_HOME` or use repo-relative path discovery at runtime.
 
 3. Generate `author` so it reads `<HOME>/install-state.json`, writes
