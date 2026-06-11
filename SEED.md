@@ -75,6 +75,8 @@ marked "your part comes soon — keep this page open". It MUST never show fake
 progress. The served page polls the endpoint (`GET /status`, 1–2 s) for the
 current `install-report.json` rendering and form state; meta-refresh is
 retired on the served page and retained on the static fallback page below.
+A status re-render MUST preserve in-progress, un-submitted form input —
+polling never clobbers what the user is typing.
 
 Page availability degrades through four tiers, all non-fatal:
 
@@ -110,6 +112,9 @@ and `ref/` still ships only `verify.sh`:
   opened at this URL in the primary tier (no longer `file://` there).
 - `GET /status` returns non-secret JSON: the rendered install-report state,
   form-section states (locked / unlocked / answered), and live values.
+  `GET /status?retry=calendars` is the read-only re-trigger for a failed
+  calendar list call — it re-runs the read, writes nothing, and leaves the
+  bounded rule's single write untouched. Query strings are never logged.
 - `POST /answers` is the ONE write. It accepts the setup-form submission (or
   per-section partial submissions, each stamped at its own POST), validates
   server-side per the sanitization rules below, and atomically writes the
@@ -340,12 +345,13 @@ answerable from first paint:
    reports CONNECTED, or renders already connected, nothing to do.
 4. **Calendar election** — unlocks only after the login and connector watches
    have both flipped. It renders the user's real calendars as multi-select
-   checkboxes, the primary calendar pre-checked as the suggested default,
-   from the installing agent's own connector call — owned by this root, not a
-   slice helper, and bounded by the same 90-second timeout the calendar
-   probe pins. On call failure or timeout the section says so and offers a
-   retry alongside the skip path; it MUST NOT render stale or invented
-   calendars. Ids are carried; names resolve server-side per
+   checkboxes, the primary calendar pre-checked as the suggested default —
+   the primary is the calendar whose id equals the connected account's email
+   address — from the installing agent's own connector call: owned by this
+   root, not a slice helper, and bounded by the same 90-second timeout the
+   calendar probe pins. On call failure or timeout the section says so and
+   offers a retry (the read-only `GET /status?retry=calendars` re-trigger)
+   alongside the skip path; it MUST NOT render stale or invented calendars. Ids are carried; names resolve server-side per
    `## Dependencies`. **"Skip — Domo will ask me by text" is a first-class
    answer** that records `"elected": []` in the answers file; submitting the
    form without touching the section is the same answer, and the section says
