@@ -8,8 +8,10 @@ Run the committed structural verifier:
 bash ref/verify.sh
 ```
 
-This checks the SEED tree shape: README purpose heading, root grammar, purpose
-back-references, and the `## Verification` / `## Open Items` heading grammar.
+This runs four structural checks over the SEED tree shape: the README
+`## Purpose` heading; the root `SEED.md` one-H1 + canonical H2 grammar;
+tree-wide `SEED.md` conformance (purpose back-references included); and that the
+shipped `ref/` directory contains exactly `verify.sh` and nothing else.
 
 ## Install Rehearsal
 

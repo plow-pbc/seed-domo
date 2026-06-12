@@ -69,6 +69,14 @@ generated `claude` invocation in this slice.
 - **Domo workspace** - `<HOME>/workspace`, containing generated `CLAUDE.md`.
   The prompt MUST match solo or group mode from `<HOME>/install-state.json` and
   include group member display names when group mode is active.
+- **Elected calendars context** - the pinned `## Calendars` block inside
+  `<HOME>/workspace/CLAUDE.md`, delimited by the `domo:calendars:start` and
+  `domo:calendars:end` sentinel comments. Seeded by `author` from
+  `install-state.json` `calendars.elected` - already-elected when non-empty,
+  else the `(not yet elected)` placeholder. Rewritten by Domo itself at
+  fallback election or re-election, and preserved across regeneration per the
+  precedence rule in step 3 of "Domo runtime is generated". This block is
+  editable standing context, not frozen config.
 - **Pinned session metadata** - `<HOME>/.claude/domo.json`, chmod 600, containing
   `session_id`, `channel`, and `created`. `session_id` is the single persistent
   session used by daemon starts.
@@ -110,8 +118,10 @@ entrypoint.
    ```
 
 2. Generate every helper in `<HOME>/runtime/domo-runtime` and the operator
-   entrypoint `<HOME>/bin/domo` as chmod-700 executable files. Each generated
-   file MUST contain the baked absolute `<HOME>` literal. Generated files MUST
+   entrypoint `<HOME>/bin/domo` as chmod-700 executable files. Generated files
+   that reference install paths MUST carry them as baked absolute literals —
+   a derived absolute path such as the host-log root satisfies this, and a
+   helper that is a pure function of its argv needs none. Generated files MUST
    NOT read `DOMO_HOME` or use repo-relative path discovery at runtime.
 
 3. Generate `author` so it reads `<HOME>/install-state.json`, writes
@@ -126,6 +136,205 @@ entrypoint.
    The solo prompt MUST describe a solo household. The group prompt MUST
    describe a group household and include the verified member display names from
    install state.
+
+   `author` MUST also author the elected-calendars context into the generated
+   `CLAUDE.md`:
+
+   - **Install-state interface.** `author` reads the optional top-level
+     `calendars` field of `<HOME>/install-state.json`, transcribed by
+     `seeds/plow-activation/SEED.md` as a verbatim pass-through from the
+     install's interactive moment:
+
+     ```json
+     "calendars": {
+       "elected": [
+         { "name": "Personal", "id": "pat@example.com" },
+         { "name": "Work", "id": "c_abc123@group.calendar.google.com" }
+       ],
+       "elected_at": "<iso8601>"
+     }
+     ```
+
+     `calendars.elected` absent or `[]` means the install moment did not elect
+     (an explicit skip records `[]`). `author` MUST read only
+     `install-state.json` - never any install answers file.
+
+   - **Pinned block shape.** The generated `CLAUDE.md` MUST contain exactly one
+     `## Calendars` section. The version comment is always exactly
+     `<!-- domo:calendars v1 -->`. The election stamp lives INSIDE the
+     sentinels, as the first body line of an elected block - so every writer,
+     `author` or Domo editing only between the markers, can stamp without
+     touching anything outside them. When `calendars.elected` is empty or
+     absent, seed the placeholder form:
+
+     ```markdown
+     ## Calendars
+
+     <!-- domo:calendars v1 -->
+     <!-- domo:calendars:start -->
+     (not yet elected)
+     <!-- domo:calendars:end -->
+     ```
+
+     When `calendars.elected` is non-empty, seed the block already-elected:
+     the body is the stamp line copied verbatim from install-state's
+     `elected_at`, then the fixed scope line, then one line per elected
+     calendar:
+
+     ```markdown
+     ## Calendars
+
+     <!-- domo:calendars v1 -->
+     <!-- domo:calendars:start -->
+     elected_at: 2026-06-10T18:00:00Z
+     Elected calendars — use ONLY these for calendar questions unless the user explicitly asks otherwise:
+     - Personal — id: pat@example.com
+     - Work — id: c_abc123@group.calendar.google.com
+     <!-- domo:calendars:end -->
+     ```
+
+     Placeholder bodies carry no stamp line. `author` stamps from
+     install-state's `elected_at`; Domo writes its own current-time stamp line
+     when it records a fallback election or re-election. Every elected body
+     MUST carry the stamp line; a stampless elected block is malformed — it is
+     quarantined and re-elicited by the rule below, so no stampless elected
+     artifact is valid anywhere.
+
+   - **Block-body shape is normative (this is an injection surface).** A
+     non-placeholder body between the sentinels MUST be exactly: the stamp
+     line `elected_at: <iso8601>` (MUST be present), then the fixed scope line
+     above, then one line per elected
+     calendar in the form `- <name> — id: <id>`, and nothing else - no free
+     text, no extra markdown, no lines copied from user or calendar input.
+     Calendar names are third-party-controlled and, in group mode, SMS is
+     member-controlled, so before writing, the writer (installing agent or
+     Domo) MUST sanitize each name: strip newlines, control characters, any
+     markdown or HTML-comment structure, and the literal entry-line separator
+     sequence ` — id: ` (normalize it away so a hostile name cannot forge an
+     extra name/id boundary), and cap length at 80 characters. The id is taken
+     verbatim from `list_calendars`. Nothing from the conversation other than
+     the chosen name(s) reaches the block. `author` MUST store name AND id so
+     later calendar queries can target the right `calendarId`.
+
+   - **Regeneration-preserve rule - a HOT path.** `author` re-runs on every
+     routine bring-up (`<HOME>/bin/domo ready` re-authors workspace config each
+     time), so a preserve bug wipes the election on every restart. When
+     `author` (re)writes `CLAUDE.md`:
+
+     - If the existing `CLAUDE.md` contains a well-formed
+       `domo:calendars:start`/`end` block whose body is not the
+       `(not yet elected)` placeholder, `author` MUST copy that block verbatim
+       into the regenerated file, subject to the precedence rule below.
+       Before copying, `author` MUST validate the block shape (intact
+       sentinels; a required leading `elected_at: <iso8601>` stamp line; the
+       fixed scope line; one `- <name> — id: <id>` line per calendar).
+       Validation is a MUST because it gates the quarantine path; a violation
+       is treated as malformed (below).
+     - **Precedence rule (which election wins):** the existing block wins
+       UNLESS this install carries a calendar answer whose
+       `install-state.calendars.elected_at` is newer than the existing block's
+       stamp line. A newer-stamped answer supersedes the block by its content:
+       - newer stamp AND `elected` non-empty → OVERRIDE the block with the new
+         election;
+       - newer stamp AND `elected` empty (`[]`) → reseed the
+         `(not yet elected)` placeholder, clearing the prior election so Domo
+         re-asks. This is the reinstall-skip case: on a reinstall over a home
+         with an existing election, a user who clicks "Skip — Domo will ask me
+         by text" MUST clear the old block, not silently keep it — a stamped
+         empty answer that merely "lost" to the old block would make the Skip
+         button lie. A newer-stamped empty answer is a deliberate skip and
+         outranks the stale election. (By the same shape, a reinstall where the
+         user walks past the calendar deadline writes the same fresh-stamped
+         `[]` and likewise reseeds the placeholder — a deliberate, accepted
+         consequence: re-electing costs one text, and distinguishing
+         skip-from-deadline would need a marker field nothing else wants.)
+       Otherwise — no `calendars` field, or an older-or-equal stamp — the
+       existing block wins, so a routine `<HOME>/bin/domo ready` re-author
+       against an unchanged install-state keeps the user's conversational
+       re-elections. A well-formed elected block always carries a stamp line, so
+       a stampless block never reaches this rule — it is malformed and
+       quarantined below.
+     - **A placeholder never outranks an election:** if the existing block is
+       the placeholder but `install-state.calendars.elected` is non-empty,
+       treat the placeholder as absent and seed already-elected.
+     - If no block exists, seed from `install-state.json` (already-elected or
+       placeholder, per the pinned shapes above).
+     - **Malformed block - never silent-reseed.** If the sentinels are damaged
+       or the body violates the pinned shape (a stampless elected block is
+       malformed), `author` MUST quarantine the damaged region by moving it into
+       an adjacent HTML comment (nothing is silently lost), reseed a valid
+       `(not yet elected)` placeholder block, and emit a visible warning in
+       `author` output. Before moving the damaged bytes into that comment,
+       `author` MUST defang them so they cannot re-arm the sentinel machinery:
+       every `domo:calendars` token is rewritten (e.g. to
+       `domo:calendars-QUARANTINED`) and every `--`/`-->` sequence is broken
+       (e.g. to `- -`), so the quarantined bytes can neither re-match a
+       `domo:calendars` sentinel nor terminate the enclosing HTML comment early.
+       This preserves the sentinel-uniqueness invariant the quarantine sits
+       beside (it matches the defanging convention already used by the live
+       worker; it is now normative). Domo then re-elicits; the install never
+       wedges and no election data vanishes without a trace.
+     - The rest of `CLAUDE.md` (reply-tool line, solo/group prompt)
+       regenerates normally.
+
+   - **Standing election, scope, and re-election instructions.** These live in
+     the generated workspace `CLAUDE.md`, NOT in the daemon's
+     `--append-system-prompt` (`domo-runtime.json`): `CLAUDE.md` is re-read at
+     every session start and is the editable surface Domo itself rewrites; the
+     append-system-prompt is fixed at launch and cannot carry an evolving
+     election. The instruction text MUST NOT reproduce the placeholder line
+     or a sentinel line verbatim as a standalone line - refer to them inline
+     (e.g. in backticks mid-sentence) so the block region stays the unique
+     match target for Domo's own anchored file edits. The generated
+     `CLAUDE.md` MUST include standing instructions that (exact wording is
+     the generator's; these MUSTs are normative):
+
+     - **Fallback trigger:** on the first conversation - a bare greeting
+       included - if the `## Calendars` block still reads `(not yet elected)`,
+       Domo MUST open the election in its first reply, before any calendar
+       use. Handle the user's request and open the election in the same
+       reply: an urgent non-calendar first text gets its answer alongside the
+       election ask, never a setup-first brush-off. "Before you use the
+       calendar" is not license to defer past the first exchange; if the
+       first text was itself a calendar question, electing first and then
+       answering is the expected extra message.
+     - **List with a real call:** Domo MUST call
+       `mcp__claude_ai_Google_Calendar__list_calendars` and tell the user, over
+       text, which calendars it can see - names, not raw ids. If the call
+       fails (connector not connected), Domo MUST say to reconnect Google
+       Calendar at `https://claude.ai/customize/connectors` and retry on the
+       next ask - never flail silently. If there are many calendars, name the
+       first handful and offer the rest on request.
+     - **Ask:** ask which calendar(s) to use; multiple picks are allowed. On a
+       vague answer ("whatever", "all"), default to the primary calendar, say
+       so, and record it - the user can change it anytime.
+     - **Record:** on answer, rewrite only the text between the
+       `domo:calendars:start` and `domo:calendars:end` markers (never the
+       markers themselves, never anything outside them) to the pinned
+       non-placeholder body shape above, writing a fresh current-time
+       `elected_at: <iso8601>` stamp as its first line and sanitizing each
+       name, then confirm in one short text.
+     - **Divergence:** the `## Calendars` block is authoritative. If the
+       conversation's memory of the election and the block disagree - an
+       election discussed but never written, or a block changed since - Domo
+       MUST trust the block and re-confirm with the user before relying on
+       the remembered set.
+     - **Scope:** use only the elected calendars for calendar questions unless
+       the user explicitly asks otherwise. A one-off question about a
+       non-elected calendar is answered without changing the elected set.
+     - **Re-election:** when asked to change which calendars to use ("use my
+       work calendar too", "stop using Holidays"), update the elected list in
+       the `## Calendars` block and confirm - editable standing context, not
+       frozen config.
+     - **Group variant (household-global):** in group mode there is one shared
+       elected set for the household (all calendars come from the single
+       connected Anthropic account); use plural household wording, the first
+       verified member to text triggers the fallback election, and any
+       verified member may re-elect.
+     - **Reply-tool discipline:** every user-visible message in the election,
+       confirmation, and re-election exchanges goes through the `plow-chat`
+       `reply` tool. Keep the exchange tight: the list plus question, then a
+       short confirmation.
 
 4. Generate the pinned-session rule exactly: if the session jsonl exists under
    the workspace projects directory, launch Claude with `--resume <session_id>`;
@@ -180,7 +389,15 @@ entrypoint.
 
 8. Generate the readiness gate as snapshot -> delta -> sessionId match. The
    gate's own exit code MUST decide readiness: `start` MUST NOT run the gate
-   inside a pipeline or wrapper that masks its exit status. `start`
+   inside a pipeline or wrapper that masks its exit status. This non-masking
+   rule is general across this slice: EVERY generated gate or sender whose exit
+   code decides a branch — the readiness gate, `status --assert`, `doctor`,
+   `send-ready`, and any helper a caller tests with `if`/`&&`/`||` — MUST have
+   its OWN exit status reach that decision. None may be the left side of a `|`
+   (including `| tee`), the body of a `$(...)`/backtick capture, or any wrapper
+   that substitutes the pipeline's exit for the helper's; where a pipe is
+   unavoidable the generator MUST consult `${PIPESTATUS[0]}` or set
+   `pipefail` so the helper's real code is what decides. `start`
    MUST snapshot the host MCP log files immediately before daemon launch, then
    accept readiness only when the appended delta contains both:
 
@@ -225,7 +442,12 @@ entrypoint.
 12. Generate `logs` to restore terminal state on exit. It MUST run `stty sane`
     when possible, reset common terminal modes, and pass raw daemon logs through
     `strip_ansi` before printing. Transcript rendering MUST use the pinned
-    session jsonl when present and MUST avoid printing secrets.
+    session jsonl when present and MUST avoid printing secrets. Any generated
+    transcript or evidence matching against tool-call names MUST accept the
+    namespaced MCP form `mcp__<server>__<tool>` (for the channel reply,
+    `mcp__plow-chat__reply`) wherever a bare tool name is matched — Claude Code
+    records MCP tools under the namespaced form, and a bare-name-only match
+    silently renders nothing.
 
 13. Generate `stop` to stop the wrapper PID, then tree-kill by the recorded
     scoped signature derived from the pinned session id. It MUST also sweep
@@ -253,6 +475,19 @@ entrypoint.
     the runtime home from its own location, `DOMO_HOME`, `PWD`, or the caller's
     environment.
 
+16. The assembled runtime MUST surface the current date, the day of week, and
+    the household timezone to the pinned session as DATA accompanying every
+    inbound channel event. The single canonical mechanism is the
+    channel-notification meta `current_date`, `day_of_week`, and
+    `household_timezone` fields defined in `seeds/plow-channel-server/SEED.md`
+    step 8, stamped by the channel server from the host clock on every inbound
+    event — there is no alternate per-event mechanism. This is a mechanism, not
+    an instruction: a standing "be careful with dates" prompt line does NOT
+    satisfy it. The session's clock-blindness is a data gap, not a discipline
+    gap — a real install answered a "what's tomorrow?" question with the
+    wrong calendar date and self-corrected only a turn later. The household
+    timezone is the host's local zone (no override exists today).
+
 If this slice's `## Verification` fails because a generated helper or CLI is
 wrong, the installing agent MUST regenerate this slice exactly once and rerun
 Verification. If the rerun still fails, stop the install, write terminal
@@ -274,6 +509,21 @@ registration line, and only then sends the first ready text through the Plow
 
 The user install E2E is the real phone receiving the default ready text. The dev
 rehearsal E2E is the same ready text landing in the local Plow chat.
+
+### Domo elects calendars on first run (fallback)
+
+When the `## Calendars` block still reads `(not yet elected)` at the first
+conversation - the install's interactive moment did not elect - Domo calls
+`mcp__claude_ai_Google_Calendar__list_calendars`, presents the list and asks
+which calendar(s) to use (via the `reply` tool), records the answer into the
+`## Calendars` block of its workspace `CLAUDE.md` per the pinned shape in step
+3, and thereafter scopes calendar answers to the elected set unless the user
+asks otherwise; re-election by request updates the block the same way. The
+list call and replies are normal subscription-billed runtime usage; the
+install-time probe cost caps in `seeds/calendar-connector/SEED.md` are
+untouched. The primary install-time election is driven by the install surface
+and arrives already-made via `install-state.json` `calendars`; when it is
+present, Domo holds no election conversation at all.
 
 ### Domo runtime is reset
 
@@ -347,17 +597,73 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
 
    Group mode includes verified member display names.
 
-9. `status --assert` and `doctor` are green immediately after readiness and again
-   after a hold of at least 120 seconds. Neither command prints the Plow token.
+9. On a fresh author with an `install-state.json` carrying non-empty
+   `calendars.elected`, the generated `<HOME>/workspace/CLAUDE.md`
+   `## Calendars` block is seeded already-elected - the
+   `elected_at: <iso8601>` stamp line (copied from install-state) as the
+   first body line inside the sentinels, then the fixed scope line, then one
+   `- <name> — id: <id>` line per entry. With `calendars.elected` empty or
+   absent, it is seeded with the `(not yet elected)` placeholder and no stamp
+   line. Either way the version comment is exactly `<!-- domo:calendars v1 -->`
+   and the `domo:calendars:start`/`end` sentinels are present and intact.
 
-10. `logs` restores terminal state and strips raw TUI control bytes before
+10. The generated `CLAUDE.md` contains the fallback first-run election,
+    scope-to-elected, and re-election standing instructions, routed through
+    the `reply` tool, and the daemon's `--append-system-prompt` carries none
+    of them. The regeneration-preserve drill is NOT a shipped self-check - it
+    is fixture-class and would leave a fake election in a live `CLAUDE.md`;
+    it lives in private rehearsal evidence with a mandatory restore step.
+
+11. Primary election path, live: with `install-state.json` carrying the
+    install moment's election, a calendar question is answered scoped to the
+    elected calendars with no election conversation.
+
+12. Fallback election path, live: when no election arrived at install, on
+    first contact Domo lists the real calendars and asks which to use through
+    the `reply` tool; after the user answers, the `## Calendars` block
+    reflects the elected set - sanitized name, verbatim id, and a fresh
+    `elected_at` stamp line inside the sentinels - written by Domo's own
+    file edit under `--permission-mode auto`.
+
+13. A subsequent calendar question's answer reflects only the elected
+    calendars — a user install MUST drive this scoped answer (it and the date
+    anchor, item 20, are the live-required pair). A one-off question about a
+    non-elected calendar is answered without changing the elected set; this
+    one-off check MAY carry rehearsal evidence instead of being re-driven on
+    every user install.
+
+14. Restart-survival: after electing, `<HOME>/bin/domo stop` then
+    `<HOME>/bin/domo ready`, then a calendar question is answered scoped to
+    the elected set WITHOUT re-eliciting - the regeneration-preserve rule
+    holds on a routine restart.
+
+15. A re-election request ("use my work calendar too") updates the block and
+    subsequent answers include the added calendar - editable standing
+    context, not frozen config. This MAY carry rehearsal evidence instead of
+    being re-driven on every user install.
+
+16. `status --assert` and `doctor` are green immediately after readiness and again
+    after a hold of at least 120 seconds. Neither command prints the Plow token.
+
+17. `logs` restores terminal state and strips raw TUI control bytes before
     printing. `stop` tree-kills by scoped pinned-session signature and sweeps
     channel children by the baked channel path.
 
-11. `reset` delegates teardown in order: generated Plow activation `cleanup`,
+18. `reset` delegates teardown in order: generated Plow activation `cleanup`,
     then generated Claude instance `logout`, then guarded local removal. It does
     not re-implement Plow delete-chat behavior or Claude logout behavior.
 
-12. Token hygiene is clean. The Plow token value from `state.json` does not
+19. Token hygiene is clean. The Plow token value from `state.json` does not
     appear in argv, generated runtime files, daemon logs, status output,
     dashboard text, committed files, or install evidence.
+
+20. Date anchor: a "what's tomorrow?"-class question through the channel is
+    answered with the correct calendar date and day of week on the first
+    reply, and the inbound event that produced it demonstrably carried the
+    current date, day of week, and household timezone as per-event data — the
+    channel-notification meta `current_date` / `day_of_week` /
+    `household_timezone` fields (the step 16 mechanism, defined in
+    `seeds/plow-channel-server/SEED.md` step 8), not a standing prompt
+    instruction. A user install MUST drive this; it and the item-13 scoped
+    answer are the live-required pair, while items 13 (one-off) and 15
+    (re-election) MAY carry rehearsal evidence.

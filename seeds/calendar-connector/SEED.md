@@ -159,8 +159,10 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
    test -d "<HOME>/runtime/calendar-connector/workspace"
    ```
 
-2. Generated files in `<HOME>/runtime/calendar-connector` contain baked absolute
-   paths and do not read `DOMO_HOME` at runtime.
+2. Generated files in `<HOME>/runtime/calendar-connector` that reference
+   install paths carry them as baked absolute literals — a helper that is a
+   pure function of its argv needs none — and no generated file reads
+   `DOMO_HOME` at runtime.
 
 3. Generated Claude launch paths unset `ANTHROPIC_API_KEY` and
    `CLAUDE_CODE_OAUTH_TOKEN`; the Calendar probe does not depend on ambient

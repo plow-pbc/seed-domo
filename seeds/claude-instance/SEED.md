@@ -41,12 +41,19 @@ generated Claude launch path in this slice.
   `<HOME>/.claude/settings.json`, both chmod 600.
 - **Claude-instance runtime dir** - `<HOME>/runtime/claude-instance`, containing
   generated helpers for `login`, `auth-status`, and `logout`.
-- **Login helper** - a generated executable that runs `claude "/quit"` under the
-  isolated config with metered keys unset, then drains delayed terminal input and
-  runs `stty sane` when stdin is a TTY. The helper uses `claude "/quit"`, not
-  `claude auth login`, because the auth subcommand can skip the normal TUI and
-  browser first-run flow; the TUI path is what reliably seeds subscription auth
-  in the isolated config.
+- **Login helper** - a generated executable that runs `claude auth login` under
+  the isolated config with metered keys unset. The installing agent runs the
+  helper and captures the auth URL the subcommand emits (`Opening browser to
+  sign in… / If the browser didn't open, visit: <url>`); the user completes the
+  browser step and `claude auth login` auto-detects completion through its
+  callback back-channel and writes the credential, so no code paste is needed
+  in the normal case — the `Paste code here if prompted` line is a fallback
+  only. The helper drains delayed terminal input and runs `stty sane` when
+  stdin is a TTY, and MUST NOT ask for, print, or copy Claude auth tokens.
+  `claude auth login` writes a FRESH `.claude.json` WITHOUT onboarding flags, so
+  the onboarding seed is applied AFTER auth completes (the SEED-AFTER-LOGIN
+  ordering pinned in `## Actions`); `/login` is retained only as the documented
+  manual-recovery path (see `## Verification`), not the install mechanism.
 - **Auth-status helper** - a generated executable that runs
   `claude auth status --json` under the isolated config and succeeds only for
   the four-field subscription-auth truth.
@@ -70,26 +77,9 @@ NOT copy or depend on any committed login script.
    <HOME>/runtime/claude-instance
    ```
 
-2. Write `<HOME>/.claude/.claude.json` chmod 600. Preserve any existing valid
-   JSON object, but ensure these fields are present:
-
-   ```json
-   {
-     "hasCompletedOnboarding": true,
-     "fullscreenUpsellSeenCount": 3,
-     "projects": {
-       "<HOME>/workspace": {
-         "hasTrustDialogAccepted": true
-       }
-     }
-   }
-   ```
-
-   If `fullscreenUpsellSeenCount` already exists and is greater than `3`, keep
-   the greater value.
-
-3. Write `<HOME>/.claude/settings.json` chmod 600. Preserve any existing valid
-   JSON object, but ensure:
+2. Write `<HOME>/.claude/settings.json` chmod 600. `claude auth login` does not
+   touch this file, so it is safe to write before auth. Preserve any existing
+   valid JSON object, but ensure:
 
    ```json
    {
@@ -100,21 +90,27 @@ NOT copy or depend on any committed login script.
 
    If `theme` already exists, preserve it; `tui` MUST be `"default"`.
 
-4. Generate the login helper under `<HOME>/runtime/claude-instance`. Its Claude
+3. Generate the login helper under `<HOME>/runtime/claude-instance`. Its Claude
    invocation MUST be exactly:
 
    ```bash
    env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
      CLAUDE_CONFIG_DIR="<HOME>/.claude" \
-     claude "/quit"
+     claude auth login
    ```
 
-   The helper MUST print the baked home and isolated config path, but MUST NOT
-   ask for, print, or copy Claude auth tokens. After Claude exits, when stdin is
-   a TTY, the helper MUST drain delayed terminal input using noncanonical reads
-   and then run `stty sane`.
+   The installing agent runs this helper and captures the auth URL the
+   subcommand emits (`Opening browser to sign in… / If the browser didn't open,
+   visit: <url>`). The user completes the browser step; `claude auth login`
+   auto-detects completion through its callback back-channel and writes the
+   credential, so no code paste is needed in the normal case — the
+   `Paste code here if prompted` line is a fallback only. The helper MUST print
+   the baked home and isolated config path, but MUST NOT ask for, print, or copy
+   Claude auth tokens. After the subcommand exits, when stdin is a TTY, the
+   helper MUST drain delayed terminal input using noncanonical reads and then
+   run `stty sane`.
 
-5. Generate any prompt-confirmation helper needed for the Claude first-run TUI.
+4. Generate any prompt-confirmation helper needed for the Claude first-run TUI.
    It MUST match stable label anchors, not brittle full-screen text snapshots,
    because Claude can fragment prompts across terminal redraws. Required anchors
    are exactly:
@@ -136,7 +132,7 @@ NOT copy or depend on any committed login script.
    prompt can expose those words before the stable `Yes, try it` option label
    appears.
 
-6. Generate the auth-status helper. It MUST run:
+5. Generate the auth-status helper. It MUST run:
 
    ```bash
    env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
@@ -156,14 +152,45 @@ NOT copy or depend on any committed login script.
    It MUST treat missing, non-object, or unparsable JSON as not logged in.
    Its wait mode MUST poll every 2 seconds and MUST time out after 600 seconds.
 
-7. Generate the logout helper. It MUST use the same isolated environment and
+6. Generate the logout helper. It MUST use the same isolated environment and
    MUST run `claude auth logout`. The helper is for later reset behavior, not
    for normal install verification.
 
-8. Run the login helper if the auth-status helper does not already report the
-   four-field subscription-auth truth. Surface the login command to the user and
-   wait until the user completes browser login. Then poll auth-status every 2
-   seconds until it succeeds or the 600-second install timeout expires.
+7. Run the login helper if the auth-status helper does not already report the
+   four-field subscription-auth truth. The installing agent runs the helper,
+   captures the emitted auth URL, and surfaces it to the user — in the primary
+   tier through the installer page's login watch section (the root SEED pushes
+   the captured URL to the page); the terminal command is the no-page fallback.
+   `claude auth login` auto-detects the browser completion and writes the
+   credential independent of any TUI session, so the user need only finish the
+   browser step. Then poll auth-status every 2 seconds until it succeeds or the
+   600-second install timeout expires.
+
+8. SEED-AFTER-LOGIN — only after the auth-status helper reports the four-field
+   subscription-auth truth, write `<HOME>/.claude/.claude.json` chmod 600 with
+   the onboarding seed. `claude auth login` writes a FRESH `.claude.json`
+   WITHOUT onboarding flags (it carries only the `oauthAccount` plus runtime
+   fields), so this seed MUST be applied AFTER auth completes; a seed written
+   before login is clobbered by the login's own `.claude.json` write — both
+   orders are proven in rehearsal, so the ordering is documented, not assumed.
+   Preserve any existing valid JSON object (including the `oauthAccount` the
+   login wrote), but ensure these fields are present:
+
+   ```json
+   {
+     "hasCompletedOnboarding": true,
+     "fullscreenUpsellSeenCount": 3,
+     "projects": {
+       "<HOME>/workspace": {
+         "hasTrustDialogAccepted": true
+       }
+     }
+   }
+   ```
+
+   If `fullscreenUpsellSeenCount` already exists and is greater than `3`, keep
+   the greater value. On a re-install where auth is already satisfied, step 7
+   runs no login and this seed still applies idempotently.
 
 If this slice's `## Verification` fails because a generated helper or config is
 wrong, the installing agent MUST regenerate this slice exactly once and rerun
@@ -236,3 +263,10 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
 
 7. The logout helper exists for reset delegation, but normal install
    verification does not run it.
+
+8. Manual-recovery path (documented, not the install mechanism): if
+   `claude auth login` cannot complete for a user, `claude "/login"` run under
+   the same isolated environment opens the in-TUI login-method selector
+   (verified on Claude Code 2.1.173) and reaches the same subscription-OAuth
+   flow. It is the fallback an operator may invoke by hand; the generated login
+   helper uses `claude auth login` (Objects, step 3).

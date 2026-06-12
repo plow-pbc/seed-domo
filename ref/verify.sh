@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Deterministic implementation of the SEED ## Verification section's three
+# Deterministic implementation of the SEED ## Verification section's four
 # STRUCTURAL prompts (README ## Purpose; root SEED.md one-H1 + canonical
-# H2 grammar; tree-wide SEED.md conformance).
+# H2 grammar; tree-wide SEED.md conformance; shipped ref/ contains only
+# verify.sh).
 #
 # The natural-language prompts in SEED.md's ## Verification section are the
 # normative source; this script runs the same structural checks as bash so
@@ -13,7 +14,7 @@
 # Usage:   bash ref/verify.sh [TARGET_DIR]
 #   TARGET_DIR defaults to "." (run from the repo root: `bash ref/verify.sh`).
 #
-# Exit 0 iff all three structural checks pass. Any failure prints a FAIL
+# Exit 0 iff all four structural checks pass. Any failure prints a FAIL
 # line and exits non-zero. Per-check PASS/FAIL lines are printed regardless.
 #
 # Portability: macOS bash 3.2 + BSD/awk (no GNU-only flags — no `grep -P`,
@@ -174,7 +175,7 @@ check_seed() {
 }
 
 # ---------------------------------------------------------------------------
-# Run the three checks. We disable `set -e`'s abort-on-nonzero around each
+# Run the four checks. We disable `set -e`'s abort-on-nonzero around each
 # check so a FAILing check still prints its PASS/FAIL line; the final exit
 # code is driven by $overall.
 # ---------------------------------------------------------------------------
@@ -242,6 +243,25 @@ else
   echo "FAIL  check 3: one or more SEED.md in the tree do not conform:"
   printf '%s' "$tree_reasons"
   overall=1
+fi
+
+# --- Check 4: the shipped ref/ directory contains exactly verify.sh ---
+# The root SEED.md ## Verification states ref/ contains exactly verify.sh and
+# no old product scripts, installer SPA/server, channel server, bin helper,
+# harness, or test double. Enforce it deterministically: any entry under ref/
+# other than verify.sh fails the check.
+if [ ! -d ref ]; then
+  echo "FAIL  check 4: ref/ directory not found"
+  overall=1
+else
+  extra_ref="$(find ref -mindepth 1 ! -name verify.sh 2>/dev/null)"
+  if [ -z "$extra_ref" ]; then
+    echo "PASS  check 4: ref/ contains only verify.sh"
+  else
+    echo "FAIL  check 4: ref/ contains entries other than verify.sh:"
+    printf '%s\n' "$extra_ref" | sed 's/^/  - /'
+    overall=1
+  fi
 fi
 
 echo "----"
