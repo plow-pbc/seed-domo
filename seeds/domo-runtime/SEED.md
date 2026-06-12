@@ -580,11 +580,13 @@ entrypoint.
       the baked loopback base URL): `{type, text}`, bearer auth required,
       replace-per-type, malformed posts rejected — all cited, never
       restated. Unknown fields are tolerated and ignored — the display
-      contract's additive evolution path.
+      contract's additive evolution path. A non-GET method to `/` or
+      `/messages` is rejected `405`, the same wrong-method status the
+      bounded rule pins for `/message`.
 
-    The agenda horizon is bound now: **7 days** (a generator MAY choose any
-    value within 7-14 days; the chosen value is baked and recorded
-    non-secret), rendered in the household timezone. The agenda section
+    The agenda horizon is bound now: default 7 days; a generator MAY choose
+    any value within 7-14 days; the baked value is recorded non-secret. It
+    renders in the household timezone. The agenda section
     renders its muted placeholder until the deferred event-source binding
     lands — the one deferral the display contract's admission rule allows,
     declared, never silent.
@@ -903,7 +905,7 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
 
 25. Stop kills the union: after `<HOME>/bin/domo stop`, no dashboard process
     remains by the baked-path signature and the recorded tmux session — both
-    windows — is gone, extending item 17's sweep evidence.
+    windows — is gone, extending the stop-sweep evidence.
 
 26. Degradation honesty: with the dashboard window killed, an
     inbound→`reply` round trip still works and `status` reports not-green
@@ -911,10 +913,11 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
     armed/suppressed state from its non-secret marker. This MAY carry
     rehearsal evidence per the sanctioned pattern.
 
-27. Feed-token hygiene, extending item 19: the feed token appears nowhere in
-    argv, `ps`, page text, `GET` bodies, logs, transcripts,
-    `install-report.json`, or committed files; the token file is mode 600.
-    Probes follow the existing presence-only, no-token-in-argv discipline.
+27. Feed-token hygiene, extending the token-hygiene probes: the feed token
+    appears nowhere in argv, `ps`, page text, `GET` bodies, logs,
+    transcripts, `install-report.json`, or committed files; the token file
+    is mode 600. Probes follow the existing presence-only, no-token-in-argv
+    discipline.
 
 28. The generated `CLAUDE.md` contains the `## Rhythms` standing
     instructions of step 20 — tick recognition, the recap pipeline with its
