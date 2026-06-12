@@ -101,7 +101,11 @@ The installer page and setup endpoint are governed by this bounded rule:
 The skeleton MUST render honestly while empty: a title, a "preparing your
 install…" state, the step list as placeholders, and an empty setup-form area
 marked "your part comes soon — keep this page open". It MUST never show fake
-progress. The served page polls the endpoint (`GET /status`, 1–2 s) for the
+progress. Presentation pins, page-wide: the step list / status log renders
+behind a collapsible control anchored bottom-right — the page's primary
+focus is always the user's own actions; and every user-facing string is
+plain household language — no harness, pipeline, or installer-internal
+vocabulary ever reaches a user surface. The served page polls the endpoint (`GET /status`, 1–2 s) for the
 current `install-report.json` rendering and form state; meta-refresh is
 retired on the served page and retained on the static fallback page below.
 A status re-render MUST preserve in-progress, un-submitted form input —
@@ -152,7 +156,12 @@ and `ref/` still ships only `verify.sh`:
 - `POST /answers` is the ONE write. It accepts the setup-form submission (or
   per-section partial submissions, each stamped at its own POST), validates
   server-side per the sanitization rules below, and atomically writes the
-  answers file. Every other write is rejected.
+  answers file. Every other write is rejected. A successful POST MUST be
+  acknowledged on the page within one poll cycle — the answered section
+  state plus a baked what-happens-next line — rendered endpoint-locally,
+  never dependent on installing-agent pickup: a save the user cannot see
+  land reads as dead air even when it landed (live-found at the composed
+  rehearsal).
 - A per-install random install token is embedded in the page URL and required
   on every request; requests without it are rejected. Rejection statuses are
   pinned with this precedence: the token check runs first, so a tokenless
@@ -506,6 +515,14 @@ always names the real work in flight; a bare static hint with no narration
 (a real install's only opaque stretch was an unexplained two-minute
 "Preparing activation…") is a defect.
 
+Two companion pins, page-wide: every section renders an explicit
+whose-turn indicator at every moment — the user's turn ("you"), or the
+installer's, with the narration above — so no moment leaves turn ownership
+ambiguous; and whenever the agent works in the background the page renders
+a consistent activity indicator — the page never looks dead while work is
+in flight. A user MUST be able to complete the entire sitting from the
+page alone, never needing the agent session or terminal.
+
 The sections:
 
 1. **Household** — the solo/group mode election plus, for group, the other
@@ -599,7 +616,11 @@ The sections:
    pinned in the macOS-Messages-compatible form
    `sms:<number>&body=<url-encoded full string>`, a live countdown rendered
    from the recorded `code_expires_at` — the contract's code TTL clock, NOT the
-   helper's local `REDEEM_TIMEOUT_SECONDS` poll bound — and a verified flip
+   helper's local `REDEEM_TIMEOUT_SECONDS` poll bound; when the contract
+   reports no owner-code expiry (the live contract's
+   ActivationCreateResponse carries none), the row renders honest "the code
+   re-mints automatically if it lapses" copy instead of an empty or
+   invented timer — and a verified flip
    when redeem lands. In group mode the owner's row renders first; member
    `VERIFY-` rows render only after the generated WebSocket listener is up — the
    codes-after-listener-up invariant is unchanged, and only the member rows
@@ -702,7 +723,8 @@ MUST NOT regenerate slices or build a second instance.
    real strict `tool_use` to matching `tool_result` `tool_use_id` pair for the
    Google Calendar connector, and a text-only transcript remains `PENDING`.
    Connector-watch timing is report-verifiable: the connector section rendered
-   no URL while locked, the probe ran exactly once at login-green, that one
+   no URL while locked and at no moment before the probe reported an
+   actionable state, the probe ran exactly once at login-green, that one
    result fed all three consumers (the section flip, the calendar-election
    unlock, and the calendar-connector slice's pending verification), and it was
    NOT re-run between the calendar answer and activation.
