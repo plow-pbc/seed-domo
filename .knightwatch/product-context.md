@@ -14,4 +14,4 @@ Operating point (org default):
 - **Spec rigidity:** the SEED prose IS the contract; a handled edge case the
   spec never asked for is a cost, not a feature.
 
-**This repo's `ref/` payload:** Bash `domo` orchestrator CLI + `verify.sh` and an expect PTY helper, plus a TypeScript/Bun MCP chat-channel server (`channels/plow-chat`).
+**This repo's `ref/` payload:** exactly `ref/verify.sh` (the deterministic structural verifier) — nothing else. Post-decomposition, everything that used to ship here (the `domo` orchestrator CLI, expect PTY helpers, the TypeScript/Bun MCP chat-channel server) is GENERATED at install from the SEED prose, not shipped; the published tree ships zero runnable product code beyond `verify.sh`, and `verify.sh`'s check 4 enforces it.

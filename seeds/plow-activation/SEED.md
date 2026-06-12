@@ -250,11 +250,13 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
    and selected Plow base URL as literals and do not read `DOMO_HOME` or
    `PLOW_CHAT_BASE_URL` at runtime.
 
-3. Generation records the fresh `seed-plow-chat` clone path and actual
-   `origin/main` commit. The clone contains baseline commit
-   `fe24c9a53af1c9aeea5511cc6c1a797a2b770296`, and Domo-side generated code
-   follows that contract for Plow calls instead of declaring an independent API
-   surface.
+3. Generation records the contract clone path and actual commit it read — the
+   root-carried clone path + recorded commit in a composed install, or a fresh
+   `origin/main` clone when this slice is installed standalone. Either way the
+   clone contains baseline commit
+   `fe24c9a53af1c9aeea5511cc6c1a797a2b770296` in its history, and Domo-side
+   generated code follows that contract for Plow calls instead of declaring an
+   independent API surface.
 
 4. Solo activation against the selected Plow base URL shows the full
    `Plow Activate: <code>` instruction and send-to number, rejects a bare code,

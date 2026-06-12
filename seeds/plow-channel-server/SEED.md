@@ -233,21 +233,15 @@ root union Verification re-asserts them.
 5. Token hygiene MUST be clean. The Plow token value from `state.json` MUST NOT
    appear in argv, generated logs, committed files, dashboard text, or the
    install evidence. The probes are presence-only — each emits only its fixed
-   pass/fail status, never the matching line — so the check itself can never
-   print the Bearer token it is detecting:
+   pass/fail status, never the matching line — and the token never enters any
+   probe's own argv: the process table is matched in-shell, and the file/git
+   greps read their needle from a here-string on fd 3 rather than a command
+   argument, so nothing leaks the token into `ps`:
 
    ```bash
    token="$(jq -r '.token' "<HOME>/.claude/plow-chat/state.json")"
    test -n "$token"
-   ! pgrep -af "$token" >/dev/null 2>&1
-   ! grep -Rq -- "$token" "<HOME>/.claude/run" 2>/dev/null
-   ! git grep -qF -- "$token"
+   case "$(ps -axww -o args=)" in *"$token"*) false ;; esac
+   ! grep -Rqf /dev/fd/3 "<HOME>/.claude/run" 3<<<"$token" 2>/dev/null
+   ! git grep -qf /dev/fd/3 3<<<"$token"
    ```
-
-   Argv residual (accepted and stated): passing `$token` as a `pgrep`/`grep`
-   pattern makes the token briefly visible in `ps` while the check runs. This
-   is accepted, not mitigated: the probe runs only on the operator's own host
-   during install verification — the same host whose Keychain and `state.json`
-   already hold the token — the pattern is on the process table only for the
-   check's own lifetime, and no log or evidence file captures it. It adds no
-   exposure beyond the host that already owns the secret.

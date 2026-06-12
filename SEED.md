@@ -423,9 +423,13 @@ answerable from first paint. The default-on-deadline rule applies ONLY to
 sections that have a first-class skip — today that is the calendar section: it
 carries a recorded deadline (the auto-resume waits are bounded polls, above),
 and if the moment closes with it still unsubmitted, it defaults to its
-explicit-skip `"elected": []` fallback rather than blocking the install. That
-never-submitted default is distinct from an untouched submit, which carries the
-pre-checked primary. Sections with no skip — Household, the login and connector
+explicit-skip fallback rather than blocking the install. The default-to-skip
+MUST go through the same stamping write as a user Skip — the endpoint records
+`"elected": []` AND stamps `calendars.elected_at` at that moment, never an
+unstamped shortcut — because the transcriber requires every calendar-section
+answer, skips included, to carry its `elected_at` stamp. That never-submitted
+default is distinct from an untouched submit, which carries the pre-checked
+primary. Sections with no skip — Household, the login and connector
 watches, Activation — have no default-to-skip; they keep their own remain-locked
 or pending semantics per their prose below (a watch simply stays unflipped; the
 install resumes per §"The install is resumable" when the human step lands).
@@ -594,6 +598,12 @@ MUST NOT regenerate slices or build a second instance.
      "Domo is live — try texting it" card with the send-to number.
    - Every tier: no token, password, API key, bearer value, or secret-shaped
      credential anywhere in the page, the status responses, or the snapshot.
+   - Auth URL: while the login watch is pending, the pre-auth `claude auth
+     login` OAuth URL renders on the page, in the `GET /status` body, and in
+     chat — it is exempt from the secret-shape gate (a public PKCE challenge +
+     state, not a credential) — and `install-report.json` carries NO auth URL
+     once the four-field gate has passed (it is cleared at login completion, so
+     a resumed or audited report never holds a stale auth URL).
 
 4. Claude instance seam: the generated isolated config is logged in with
    `rc == 0`, `loggedIn == true`, `authMethod == "claude.ai"`, and
