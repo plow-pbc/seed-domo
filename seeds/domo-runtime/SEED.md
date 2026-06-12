@@ -230,14 +230,30 @@ entrypoint.
        fixed scope line; one `- <name> — id: <id>` line per calendar).
        Validation is a MUST because it gates the quarantine path; a violation
        is treated as malformed (below).
-     - **Precedence rule (which election wins):** an election made in this
-       install's moment - `install-state.calendars.elected` non-empty AND its
-       `elected_at` newer than the existing block's stamp line - OVERRIDES the
-       existing block; otherwise the existing block wins, so a routine re-author
-       against an unchanged install-state (older or equal stamp) keeps the
-       user's conversational re-elections. A well-formed elected block always
-       carries a stamp line, so a stampless block never reaches this rule — it
-       is malformed and quarantined below.
+     - **Precedence rule (which election wins):** the existing block wins
+       UNLESS this install carries a calendar answer whose
+       `install-state.calendars.elected_at` is newer than the existing block's
+       stamp line. A newer-stamped answer supersedes the block by its content:
+       - newer stamp AND `elected` non-empty → OVERRIDE the block with the new
+         election;
+       - newer stamp AND `elected` empty (`[]`) → reseed the
+         `(not yet elected)` placeholder, clearing the prior election so Domo
+         re-asks. This is the reinstall-skip case: on a reinstall over a home
+         with an existing election, a user who clicks "Skip — Domo will ask me
+         by text" MUST clear the old block, not silently keep it — a stamped
+         empty answer that merely "lost" to the old block would make the Skip
+         button lie. A newer-stamped empty answer is a deliberate skip and
+         outranks the stale election. (By the same shape, a reinstall where the
+         user walks past the calendar deadline writes the same fresh-stamped
+         `[]` and likewise reseeds the placeholder — a deliberate, accepted
+         consequence: re-electing costs one text, and distinguishing
+         skip-from-deadline would need a marker field nothing else wants.)
+       Otherwise — no `calendars` field, or an older-or-equal stamp — the
+       existing block wins, so a routine `<HOME>/bin/domo ready` re-author
+       against an unchanged install-state keeps the user's conversational
+       re-elections. A well-formed elected block always carries a stamp line, so
+       a stampless block never reaches this rule — it is malformed and
+       quarantined below.
      - **A placeholder never outranks an election:** if the existing block is
        the placeholder but `install-state.calendars.elected` is non-empty,
        treat the placeholder as absent and seed already-elected.

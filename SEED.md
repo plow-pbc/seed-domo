@@ -295,7 +295,6 @@ this ordering removes that wait.)
     "schema": 1,
     "mode": "solo",
     "members": [],
-    "mode_submitted_at": "2026-06-10T17:58:12Z",
     "calendars": {
       "elected": [ { "name": "Personal", "id": "pat@example.com" } ],
       "elected_at": "2026-06-10T18:00:00Z"
@@ -316,9 +315,6 @@ this ordering removes that wait.)
   endpoint stamps each section at its own POST; `calendars.elected_at` is
   stamped at the calendar-section POST and is load-bearing for the calendar
   election precedence rule owned by `seeds/domo-runtime/SEED.md`.
-  `mode_submitted_at` is reserved for a post-merge consumer (the recorded
-  follow-up that would ignore stale `activation_detail` older than it); nothing
-  reads it today.
 - **Claude instance slice** - `seeds/claude-instance/SEED.md`, owner of isolated
   Claude subscription auth, first-run prompt immunity, metered-key-unset launch
   discipline, and logout helper.
