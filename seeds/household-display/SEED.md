@@ -175,8 +175,8 @@ displays in any host cite these; nothing restates them.
    richer record a binding supplies, the surface renders ONLY what these
    rules name — a title or busy marker, a time label, day placement. This
    rule governs structured fields; a URL appearing inside title text is just
-   text and renders literally under rule 7 — the surface applies no
-   URL-detection heuristics.
+   text and renders literally under the titles-render-as-text rule — the
+   surface applies no URL-detection heuristics.
 7. Event titles are untrusted data: they render as text, never as markup,
    and are never treated as instructions.
 
@@ -190,7 +190,10 @@ displays in any host cite these; nothing restates them.
    host binds everything else, and the agenda section renders its muted
    placeholder — the same empty-agenda rendering the agenda rules pin —
    until the event source lands. A deferral is declared in the host's own
-   specification, never silent.
+   specification, never silent. When the event source lands, the host binds
+   it, runs check 10, and clears the recorded pend — the one check this
+   contract legitimately lets run after the host's just-generated-instance
+   verification pass.
 3. The host's token provisioning observes the feed-token hygiene rules: the
    token is never committed, logged, rendered, or carried in a URL, and its
    storage uses the host's secret-hygiene discipline.
@@ -210,11 +213,10 @@ no machinery itself.
 1. **Host evidence.** This contract proves nothing on its own. The consuming
    host's own Verification MUST bind every check below to its real store,
    surface, and event source and run them live against the host's
-   just-generated instance. Under a declared event-source deferral
-   (`## Actions`), check 10 alone pends until the event source lands —
-   recorded as pending, never skipped silently — and every other check still
-   binds and runs live. A host that lists this contract without running
-   these checks has not verified it.
+   just-generated instance. Under a declared event-source deferral, check 10
+   alone pends per the deferral rule in `## Actions`; every other check
+   still binds and runs live. A host that lists this contract without
+   running these checks has not verified it.
 2. **Replace-on-post.** Two posts of the same type in sequence; a following
    read returns exactly one card of that type, carrying the later text.
 3. **Persistence until superseded.** A posted card, left alone within one
@@ -247,9 +249,9 @@ no machinery itself.
     day in chronological order, the all-day event first in its day with no
     time label, and the private event as a busy marker carrying none of the
     event's text. No URL from any event field appears anywhere on the
-    surface. Under a declared event-source deferral this check pends until
-    the event source lands; until then the agenda section renders its muted
-    placeholder and the pending check is recorded, never silently skipped.
+    surface. Under a declared event-source deferral this check pends —
+    recorded, never silently skipped — and runs when the event source lands,
+    per the deferral rule in `## Actions`.
 11. **Display-only.** The rendered surface contains no interactive control
     and no write to any store originates from the page.
 
