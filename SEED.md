@@ -195,17 +195,19 @@ Member names and any future free text flow into the workspace prompt
   name is still attacker-chosen text inside a prompt — sanitization narrows it
   to inert words; the delimited-data convention plus reply-tool discipline is
   the containment.
-- The served page is an output-injection surface, not only a prompt surface.
-  EVERY dynamic value rendered into the page — household and member names,
-  status strings, AND calendar names returned by the connector
-  (third-party-controlled, explicitly included) — MUST be HTML-escaped or
-  rendered as a text node, never interpolated as markup. Independently, the
-  endpoint applies the strip set above (C0/C1 controls, bidi, zero-width, NFC)
-  to each calendar name when it holds the `list_calendars` result, so a hostile
-  name is inert before it can reach either the page or the answers file. The
-  threat is concrete: a script-bearing calendar title rendered as markup would
-  execute in the page's origin, read the install token out of `location.href`,
-  and forge a `POST /answers` — so calendar names are escaped on output and
+- The rendered install UI is an output-injection surface, not only a prompt
+  surface, and the rule binds ALL THREE render surfaces: the served page, the
+  tier-3 static fallback page, and the terminal snapshot. EVERY dynamic value
+  rendered into any of them — household and member names, status strings, AND
+  calendar names returned by the connector (third-party-controlled, explicitly
+  included) — MUST be HTML-escaped or rendered as a text node, never
+  interpolated as markup. Independently, the endpoint applies the strip set
+  above (C0/C1 controls, bidi, zero-width, NFC) to each calendar name when it
+  holds the `list_calendars` result, so a hostile name is inert before it can
+  reach any render surface or the answers file. The threat is concrete: a
+  script-bearing calendar title rendered as markup would execute in the page's
+  origin, read the install token out of `location.href`, and forge a
+  `POST /answers` — so dynamic values are escaped on output and calendar names
   stripped at hold time, never trusted as page structure.
 
 The external Plow API contract SEED is the single declaring site for the Plow
@@ -357,16 +359,19 @@ this ordering removes that wait.)
    non-fatal and never let one block the install.
 3. Initialize repo-root `install-report.json` with pending records for the Plow
    contract, all five slices, the installer page and setup endpoint (including
-   the degradation tier in effect), and root union Verification. Record the
-   page and endpoint start timestamps retroactively. The page hydrates from
-   the report from then on.
-4. Generate slice 1 (`seeds/claude-instance`), run its login helper
-   (`claude auth login`), capture the auth URL it emits, and push that URL into
-   the page's login watch section as a "log in with Claude" link — BEFORE the
-   contract clone. In the no-page fallback tiers the same captured URL (or the
-   terminal login command) is surfaced in terminal/chat. Slice 1 has no Plow
-   dependency, and surfacing login first hands the user the moment's longest
-   action while the agent keeps generating.
+   the degradation-tier transitions as they occur), and root union Verification.
+   Record the page and endpoint start timestamps retroactively. The page
+   hydrates from the report from then on.
+4. Generate slice 1 (`seeds/claude-instance`) — BEFORE the contract clone. Per
+   the slice's own auth gate, run the login helper (`claude auth login`) only
+   when the auth-status helper does not already report the four-field truth; an
+   already-satisfied install skips login and the section renders "already logged
+   in". When login is needed, capture the auth URL the helper emits and push it
+   into the page's login watch section as a "log in with Claude" link; in the
+   no-page fallback tiers the same captured URL (or the terminal login command)
+   is surfaced in terminal/chat. Slice 1 has no Plow dependency, and surfacing
+   login first hands the user the moment's longest action while the agent keeps
+   generating.
 5. Clone, audit, and verify `https://github.com/plow-pbc/seed-plow-chat`. Record
    the clone path and commit in `install-report.json`. This step and the
    Plow-consuming slice generations MAY overlap the user's login.
@@ -414,13 +419,16 @@ them.)
 
 The setup form is the moment's surface. Sections unlock in order; a section
 renders locked until its prerequisites are met, and earlier sections are
-answerable from first paint. Each section carries a recorded deadline (the
-auto-resume waits are bounded polls, above): if the moment closes with a
-section still unanswered — the user never submitted it — that section defaults
-to its first-class skip rather than blocking the install. For the calendar
-section a never-submitted default-to-skip records the explicit-skip
-`"elected": []` fallback; this is distinct from an untouched submit, which
-carries the pre-checked primary.
+answerable from first paint. The default-on-deadline rule applies ONLY to
+sections that have a first-class skip — today that is the calendar section: it
+carries a recorded deadline (the auto-resume waits are bounded polls, above),
+and if the moment closes with it still unsubmitted, it defaults to its
+explicit-skip `"elected": []` fallback rather than blocking the install. That
+never-submitted default is distinct from an untouched submit, which carries the
+pre-checked primary. Sections with no skip — Household, the login and connector
+watches, Activation — have no default-to-skip; they keep their own remain-locked
+or pending semantics per their prose below (a watch simply stays unflipped; the
+install resumes per §"The install is resumable" when the human step lands).
 
 Whenever a section the user is plausibly waiting on is pending, the page MUST
 narrate what the agent is actually doing, rendered from `install-report.json`
@@ -450,7 +458,14 @@ The sections:
    In the no-page fallback tiers the same captured URL — or the terminal login
    command — is surfaced in terminal/chat. The credential is written by
    `claude auth login` into the isolated config; no credential ever touches the
-   page.
+   page. Auth-URL carve-out: the pre-auth OAuth URL is non-secret — its
+   `code_challenge` and `state` are a public PKCE challenge, not a credential —
+   so it is exempt from the secret-shaped-value gate on the page, the
+   `GET /status` body, and chat, even though it carries long high-entropy
+   query values. It MUST NOT persist in `install-report.json` after login
+   completes: the report may hold it only while the login watch is pending, and
+   the agent clears it once the four-field gate passes, so a resumed or audited
+   report never carries a stale auth URL.
 3. **Google Calendar connector (watch, not an input)** — renders LOCKED, with
    no copyable URL, until the login watch is green: the probe cannot run
    unauthenticated, so an earlier URL is a dead end. The connector probe runs
@@ -547,8 +562,8 @@ MUST NOT regenerate slices or build a second instance.
 
 2. `install-report.json` exists at the repo root, not under `<HOME>`, and records
    non-secret statuses for the Plow contract, all five slices, the installer
-   page and setup endpoint (including the degradation tier in effect), and
-   root union Verification.
+   page and setup endpoint (including the degradation-tier transition history,
+   the final tier being the one the union judges), and root union Verification.
 
 3. The installer page item is tier-aware, judged for the FINAL tier the install
    settled in (the tier-transition history is recorded in `install-report.json`):

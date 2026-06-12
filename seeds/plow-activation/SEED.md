@@ -153,8 +153,11 @@ not define that API shape; it only owns these Domo-side requirements:
 
 1. Surface the exact instruction text `Plow Activate: <display_code>`, the
    contract's send-to number, and the code expiry timestamp `code_expires_at`
-   (mint time plus the pinned redeem window) to the installing agent and
-   install page. The user MUST text the full string. A bare code MUST fail.
+   to the installing agent and install page. `code_expires_at` derives from the
+   contract's own code TTL as the contract reports or declares it — it is the
+   authoritative expiry the countdown renders from. `REDEEM_TIMEOUT_SECONDS`
+   below is unrelated: it is only the local redeem-poll bound, not the code's
+   life. The user MUST text the full string. A bare code MUST fail.
 2. Poll redeem every 3 seconds for up to 300 seconds until the contract reports
    verified. Timeout exits 75.
 3. If the redeem window lapses with the code never redeemed, the activation

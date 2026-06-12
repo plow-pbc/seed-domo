@@ -175,7 +175,7 @@ check_seed() {
 }
 
 # ---------------------------------------------------------------------------
-# Run the three checks. We disable `set -e`'s abort-on-nonzero around each
+# Run the four checks. We disable `set -e`'s abort-on-nonzero around each
 # check so a FAILing check still prints its PASS/FAIL line; the final exit
 # code is driven by $overall.
 # ---------------------------------------------------------------------------
