@@ -520,7 +520,9 @@ The sections:
    free-text sanitization rules in full (per `## Dependencies`, it flows
    into a geocode request URL and into generated render surfaces).
    Immediately after the Household section settles, the ROOT geocodes the
-   entered text once via Open-Meteo's keyless geocoding API — the first
+   entered text once via Open-Meteo's keyless geocoding API (the sanitized
+   label is still URL-encoded at request time — sanitization is not
+   transport encoding) — the first
    returned match wins; multiple candidates are disambiguation-by-rule,
    never a failure — and writes the non-secret household location record
    `<HOME>/.claude/household-location.json`, chmod 600,
@@ -529,9 +531,12 @@ The sections:
    results → no record is written, a non-fatal note lands in
    `install-report.json`, and the weather behavior stays lazily suppressed
    (the scheduler re-checks while the record is absent) until a record
-   exists. The field is optional and adds no gate: the Household section
-   stays answerable from first paint, and the decision moment stays one
-   sitting, one form.
+   exists. A resumed install that finds the location answered in the
+   durable answers file but no location record on disk re-runs the
+   geocode-once step — the generic reconcile rule, made explicit for this
+   root-written artifact. The field is optional and adds no gate: the
+   Household section stays answerable from first paint, and the decision
+   moment stays one sitting, one form.
 2. **Claude login (watch, not an input)** — the installing agent runs slice 1's
    login helper (`claude auth login`), captures the auth URL it emits, and the
    section renders that URL as a page-surfaced "log in with Claude" link (one
@@ -741,19 +746,22 @@ MUST NOT regenerate slices or build a second instance.
     extended token-hygiene probes. Per `seeds/plow-channel-server/SEED.md`
     items 6–12: a deterministic weather tick fires live at install (when
     the location record exists) with zero session traffic; an llm tick's
-    `<channel>` TRANSCRIPT event carries `origin="scheduler"` with the
-    recap arriving through `reply` (drill-driven rehearsal supplies this;
-    the user install's evidence is the next real 7am recap — the
-    established pending-evidence pattern); one `[NOOP]` suppression; catch-up
+    `<channel>` TRANSCRIPT event carries `origin="scheduler"`; catch-up
     fires exactly once across missed ticks; and the `send-ready` transient
-    instance is suppressed loudly.
+    instance is suppressed loudly. And, beyond the slice items,
+    composed-rehearsal evidence owned by THIS union shows the recap
+    arriving through `reply` and one `[NOOP]` suppression — drill-driven
+    rehearsal supplies both, and the user install's evidence is the next
+    real 7am recap, the established pending-evidence pattern.
 
 11. `daily-rhythms` host evidence recorded: item 10's deterministic tick,
     llm tick, and `[NOOP]` suppression supply the live evidence that
     contract's host-evidence clause demands of a consuming host, via its
-    admitted rehearsal/pending-evidence pattern; catch-up-once is
-    binding-level evidence beyond the contract's demands. The union records
-    this against `daily-rhythms`.
+    admitted rehearsal/pending-evidence pattern; the deterministic-tick
+    evidence is owed only while the location record exists — the contract's
+    able-to-fire conditional — so a no-location install pends nothing here;
+    catch-up-once is binding-level evidence beyond the contract's demands.
+    The union records this against `daily-rhythms`.
 
 12. `household-display` PARTIAL admission recorded: the display contract's
     checks 2–9 and 11 bind live in v1 through this union; check 10 (the
@@ -768,10 +776,6 @@ MUST NOT regenerate slices or build a second instance.
 
 ## Open Items
 
-- **Morning briefing trigger** - RESOLVED, no longer open: delivered by the
-  `daily-rhythms` contract's `morning-recap` behavior, fired by the
-  scheduler module in `seeds/plow-channel-server/SEED.md` and instructed
-  through the runtime's `## Rhythms` workspace authoring.
 - **Agenda event-source binding** - the display's agenda section renders its
   declared placeholder until the event source (ICS vs agent-posted events)
   is bound — the recorded head-chef fast-follow; display-contract check 10

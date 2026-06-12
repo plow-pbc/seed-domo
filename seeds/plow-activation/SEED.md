@@ -142,8 +142,7 @@ into `<HOME>/install-state.json`:
    MUST still write the fresh `calendars` field (and refreshed
    `interview.mode`/`interview.members`) from this install's carried answers —
    a skipped activation never drops a fresh election.
-4. Transcription MUST be settled before slice-5 (`domo-runtime`) generation
-   begins.
+4. Transcription MUST be settled before `domo-runtime` generation begins.
 
 ### Domo is activated as a solo chat
 
