@@ -12,9 +12,11 @@ has no hard dependencies of its own.
 A consuming host MUST supply every binding named in `## Objects`: a store
 realization serving the feed contract, a served display surface, an event
 source for the agenda section, the household timezone, the agenda horizon,
-the poll interval, and feed-token provisioning. A host that lists this
-contract MUST bind and live-run its `## Verification` — see the host-evidence
-clause there.
+the poll interval, and feed-token provisioning. One declared exception
+exists: the event-source binding MAY be deferred at admission per
+`## Actions` — the agenda section renders its muted placeholder until that
+binding lands. A host that lists this contract MUST bind and live-run its
+`## Verification` — see the host-evidence clause there.
 
 ## Objects
 
@@ -59,10 +61,12 @@ clause there.
   screen, and carries no machinery for where they come from. For each event
   the binding MUST supply: a title, a start instant, an optional end, an
   all-day marker, and a private marker. How events travel from source to
-  surface is the host's. That record is a floor, not a ceiling: a binding MAY
-  supply richer event data (join links, locations, descriptions, and the
-  like), and the agenda rules in `## Actions` name everything from an event
-  the surface may render — a structured URL-bearing field is never among it.
+  surface is the host's. A host MAY admit this contract with this one
+  binding declared deferred — see `## Actions`. That record is a floor, not
+  a ceiling: a binding MAY supply richer event data (join links, locations,
+  descriptions, and the like), and the agenda rules in `## Actions` name
+  everything from an event the surface may render — a structured URL-bearing
+  field is never among it.
 - **Household timezone** - binding-supplied configuration; all rendered times
   use it.
 - **Agenda horizon** - binding-supplied configuration; how far forward from
@@ -182,14 +186,21 @@ displays in any host cite these; nothing restates them.
    realization, the served surface, the event source, the household
    timezone, the agenda horizon, the poll interval, and the feed-token
    provisioning.
-2. The host's token provisioning observes the feed-token hygiene rules: the
+2. The event-source binding alone MAY be declared DEFERRED at admission: the
+   host binds everything else, and the agenda section renders its muted
+   placeholder — the same empty-agenda rendering the agenda rules pin —
+   until the event source lands. A deferral is declared in the host's own
+   specification, never silent.
+3. The host's token provisioning observes the feed-token hygiene rules: the
    token is never committed, logged, rendered, or carried in a URL, and its
    storage uses the host's secret-hygiene discipline.
-3. The host's own specification — never this contract — decides where the
+4. The host's own specification — never this contract — decides where the
    surface is served, what reaches the store, and when this contract is
    admitted to the host's install walk and the host's own Verification.
-4. Admission carries the evidence obligation: the host's own Verification
-   MUST bind and live-run this contract's `## Verification`.
+5. Admission carries the evidence obligation: the host's own Verification
+   MUST bind and live-run this contract's `## Verification` — under a
+   declared event-source deferral, with check 10 pending as that section
+   states.
 
 ## Verification
 
@@ -199,7 +210,10 @@ no machinery itself.
 1. **Host evidence.** This contract proves nothing on its own. The consuming
    host's own Verification MUST bind every check below to its real store,
    surface, and event source and run them live against the host's
-   just-generated instance. A host that lists this contract without running
+   just-generated instance. Under a declared event-source deferral
+   (`## Actions`), check 10 alone pends until the event source lands —
+   recorded as pending, never skipped silently — and every other check still
+   binds and runs live. A host that lists this contract without running
    these checks has not verified it.
 2. **Replace-on-post.** Two posts of the same type in sequence; a following
    read returns exactly one card of that type, carrying the later text.
@@ -233,7 +247,9 @@ no machinery itself.
     day in chronological order, the all-day event first in its day with no
     time label, and the private event as a busy marker carrying none of the
     event's text. No URL from any event field appears anywhere on the
-    surface.
+    surface. Under a declared event-source deferral this check pends until
+    the event source lands; until then the agenda section renders its muted
+    placeholder and the pending check is recorded, never silently skipped.
 11. **Display-only.** The rendered surface contains no interactive control
     and no write to any store originates from the page.
 
