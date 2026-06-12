@@ -23,7 +23,8 @@ A consuming host MUST also supply, as its own configuration:
 - **Household timezone** - one IANA zone for the whole household, resolved
   once by the host as an install constant and substituted into every cadence
   row. The zone the host's scheduler evaluates in and the zone the host stamps
-  on event data it shows the agent MUST be the same zone.
+  on event data it shows the agent (where the host has such a mechanism) MUST
+  be the same zone.
 - **Household location** - required only by behaviors that declare they need
   it (today: `weather`). A host with no location configured uses that
   behavior's declared degraded mode rather than running it broken.
@@ -54,7 +55,9 @@ machines, it is a binding and stays out.
   slots are declared per behavior in its Deliver stage and need not equal the
   name — the recap delivers to the `digest` slot). `cron` is a standard
   five-field cron expression evaluated at minute granularity. `tz` is the
-  household timezone, substituted by the host into every row. `kind` is the
+  household timezone, substituted by the host into every row; cron
+  expressions are evaluated in the row's `tz`, so "7am" tracks the household
+  through daylight-saving changes. `kind` is the
   enum `llm | deterministic`. The table is data for the host's scheduler,
   whatever that is; the host MUST treat it as the complete rhythm set —
   behaviors not in the table do not fire, and hosts MUST NOT invent cadences.
@@ -78,10 +81,10 @@ machines, it is a binding and stays out.
   - `display-post` - post a card to the household display feed, exactly per
     the feed contract `household-display` declares (its "A producer posts a
     card" action) - cited, never restated here.
-- **Zero-signal suppression** - the `[NOOP]` rule generalized: a behavior run
-  with nothing to say delivers exactly nothing on every output. Texting the
-  household at 7am to say "nothing today" is a contract violation, not a
-  friendly touch.
+- **Zero-signal suppression** - the zero-signal rule, token name `[NOOP]`: a
+  behavior run with nothing to say delivers exactly nothing on every output.
+  Texting the household at 7am to say "nothing today" is a contract
+  violation, not a friendly touch.
 
 Non-normative binding note (illustrative, carries no requirement): one known
 host binds `calendar-read` to its verified calendar-connector seam,
@@ -131,7 +134,8 @@ degraded mode applies there.
 - **Deliver:** `display-post` to the `weather` card slot, only. Never
   `owner-notify` — nobody is texted hourly weather.
 - **Zero-signal / failure:** a failed `weather-read` delivers nothing; the
-  feed's replace-per-type semantics (cited) mean the prior card persists
+  feed keeps exactly one current card per type, replaced on post (the
+  declaring site's Replace-on-post rule, cited), so the prior card persists
   until the next successful run. This behavior MUST involve no LLM in any
   host.
 
@@ -198,7 +202,7 @@ this contract's prose as a contract, item 6 is what a consuming host owes.
    `household-display`: the feed contract and the compose grammars appear
    only as citations — no grammar text, no feed field shapes, no response
    statuses are redeclared here.
-4. **Suppression.** Every behavior's Deliver prose carries the zero-signal
+4. **Suppression.** Every behavior's pipeline carries the zero-signal
    clause.
 5. **Untrusted data.** The untrusted-calendar-data rule is present and
    phrased as a host obligation (the delimited inert-data region).
@@ -228,7 +232,9 @@ this contract's prose as a contract, item 6 is what a consuming host owes.
   - deferred; v1 stays two behaviors.
 - **External promotion** - graduating this contract to its own repository is
   deferred; promotion is gated on at least one host's green end-to-end
-  evidence and a naming decision.
+  evidence and a naming decision. At promotion the
+  `../household-display/SEED.md` relative citation rewrites to that
+  contract's External SEED URL, pinned by commit.
 - **Per-behavior enable/disable surface** - v1 has none; the host's baked
   table is the truth. Revisit if a second host or a third behavior needs it.
 
