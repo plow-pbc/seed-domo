@@ -476,7 +476,13 @@ entrypoint.
 
 10. Generate `send-ready` as a direct MCP client that starts the generated Plow
     channel server from `<HOME>/runtime/plow-channel-server` and calls the
-    `reply` tool with the default ready text. The channel server reads the
+    `reply` tool with the default ready text. The generated client MUST
+    identify itself in its MCP `initialize` handshake with `clientInfo.name`
+    exactly `send-ready` — the string the channel server's send-ready
+    suppression rule (declared in `seeds/plow-channel-server/SEED.md`) keys
+    on to keep this transient instance's scheduler dark; an unidentified
+    client would silently arm a second scheduler under that rule's
+    arm-by-default posture. The channel server reads the
     baked state path generated into its own code; `send-ready` MUST NOT provide
     `PLOW_CHAT_STATE` as a runtime seam. `ready` MUST call `send-ready` only
     after the host-log readiness gate succeeds. A sent ready text is never proof
@@ -642,9 +648,10 @@ entrypoint.
     4. Kill any prior recorded session; `tmux new-session` creating window
        `dashboard` FIRST, then `tmux new-window` for `daemon`. The creation
        order matches the requirement, not just the prose: the feed endpoint
-       is listening before the daemon (and with it the scheduler) boots,
-       since a catch-up POST can fire seconds later. The order is pinned;
-       this is not a soft race we accept.
+       is listening before the daemon (and with it the scheduler) boots —
+       the scheduler's first evaluation, and with it the earliest catch-up
+       POST, lands about one scan interval after the daemon boots. The
+       order is pinned; this is not a soft race we accept.
     5. Record the per-process run records.
     6. Dashboard readiness probe: `dashboard-probe` — an HTTP GET against
        the baked loopback URL — MUST return 200 within

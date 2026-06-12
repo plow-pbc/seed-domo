@@ -87,7 +87,10 @@ pattern, so generation order never depends on any of them being present.
   behavior retries naturally at its next tick rather than via its record. A
   stamp in the future relative to now (clock rollback, corrupted record) is
   clamped to now with a loud stderr line — a bad stamp must never silence a
-  behavior indefinitely.
+  behavior indefinitely. The pinned path is consumed across the seam by the
+  root union's mode-600 hygiene evidence and by the rehearsal drills that
+  stage overdue or future stamps — which is why the path, not just the
+  shape, is contract.
 - **Scheduler state marker** -
   `<HOME>/.claude/plow-chat/scheduler-state`, a non-secret marker beside the
   connected marker recording the scheduler's `armed` or `suppressed` state,
@@ -280,11 +283,14 @@ as the installed runtime.
     next natural cron occurrence. One scan interval is the constant-free
     margin, and the uniform fire rule (step 17) makes the delayed first
     evaluation a pure shift: overdue ticks still fire exactly once, one
-    interval later. The suppression decision (step 19) still keys off the
-    `initialize` handshake's `clientInfo`, stashed until arming. Steps 5
-    and 7 are UNCHANGED by this module: no capability changes, no new tool,
-    and `tools/list` still returns exactly `reply` — the scheduler is an
-    internal module, never a tool surface.
+    interval later. The margin is empirical, not contractual — the host
+    emits no protocol signal at registration, so a host that registered
+    later than one interval would still drop a fire silently; the measured
+    margin is about four orders of magnitude. The suppression decision
+    (step 19) still keys off the `initialize` handshake's `clientInfo`,
+    stashed until arming. The scheduler is an internal module, never a tool
+    surface: the advertised capabilities stay step 5's verbatim, no new
+    tool exists, and `tools/list` returns exactly `reply` (step 7).
 
 16. On an `llm` behavior's fire the module calls the existing notification
     builder and emits a `notifications/claude/channel` event into the pinned
@@ -309,7 +315,10 @@ as the installed runtime.
     minute's scan can never double-fire. Missed-tick catch-up follows: a 4pm
     boot after a missed 7am sees one overdue tick and fires one late recap,
     never nine weather posts; a catch-up fire's `tick_` id carries the
-    SCHEDULED time of the latest overdue tick. WSS reconnect triggers
+    SCHEDULED time of the latest overdue tick. An implementation MAY bound
+    how far back it searches for an overdue tick, but the bounded window
+    MUST exceed the longest cron period in the baked table — a shorter
+    bound could silently skip a behavior's only overdue tick. WSS reconnect triggers
     nothing — it is Plow-side liveness; the scheduler's clock never stopped,
     only process death stops it — and "on start" is simply the first
     evaluation moment of the rule. Gating, uniformly: `llm` fires are
