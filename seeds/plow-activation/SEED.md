@@ -77,8 +77,11 @@ runtime.
 - **Solo activation detail** - `activation_detail.mode == "solo"` plus the
   non-secret display values needed for the install page and rehearsal
   evidence: `base_url`, `status`, `display_code`, `activation_message`,
-  `send_to`, `code_expires_at`, and the contract line identifier when
-  available.
+  `send_to`, the contract line identifier when available, and
+  `code_expires_at` when the contract reports one — the live contract's
+  activation response carries no owner-code expiry, so the field is
+  OPTIONAL: recorded as absent (never invented) when the contract does not
+  report it.
 - **Group activation detail** - `activation_detail.mode == "group"` plus owner
   activation status, selected line, chat object, participant display names,
   one-time member verification codes, per-member status, and `chat_active`.
@@ -142,8 +145,7 @@ into `<HOME>/install-state.json`:
    MUST still write the fresh `calendars` field (and refreshed
    `interview.mode`/`interview.members`) from this install's carried answers —
    a skipped activation never drops a fresh election.
-4. Transcription MUST be settled before slice-5 (`domo-runtime`) generation
-   begins.
+4. Transcription MUST be settled before `domo-runtime` generation begins.
 
 ### Domo is activated as a solo chat
 
@@ -152,10 +154,15 @@ chat flow using `provision_chat` by name as Domo's solo knob. This SEED does
 not define that API shape; it only owns these Domo-side requirements:
 
 1. Surface the exact instruction text `Plow Activate: <display_code>`, the
-   contract's send-to number, and the code expiry timestamp `code_expires_at`
+   contract's send-to number, and — when the contract reports one — the code
+   expiry timestamp `code_expires_at`
    to the installing agent and install page. `code_expires_at` derives from the
    contract's own code TTL as the contract reports or declares it — it is the
-   authoritative expiry the countdown renders from. `REDEEM_TIMEOUT_SECONDS`
+   authoritative expiry the countdown renders from. When the contract reports
+   no owner-code expiry (the live activation response carries none), no
+   expiry is surfaced and no countdown renders: the consuming page shows the
+   root's honest re-mint copy instead, and re-mint triggers off redeem
+   status, never an invented clock. `REDEEM_TIMEOUT_SECONDS`
    below is unrelated: it is only the local redeem-poll bound, not the code's
    life. The user MUST text the full string. A bare code MUST fail.
 2. Poll redeem every 3 seconds for up to 300 seconds until the contract reports
@@ -189,7 +196,8 @@ only owns the Domo-side election, resume behavior, and member-verification UX.
    activation. Idempotency is mode-specific: existing state may skip work only
    when `state.json` and `install-state.json` match the requested mode.
 3. Owner activation MUST surface the full `Plow Activate: <display_code>` text,
-   not a bare code, plus the send-to number and `code_expires_at`, and poll
+   not a bare code, plus the send-to number and `code_expires_at` when the
+   contract reports one, and poll
    redeem at the pinned cadence. The solo re-mint rule applies to the owner
    code: expired and never redeemed means re-mint and update the surfaced
    values; member `VERIFY-` codes surface an expiry only when the contract
@@ -311,6 +319,8 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
 
 12. The activation surface records the non-secret display values the install
     page renders: `activation_message`, `send_to`, `display_code`, and
-    `code_expires_at`. No expired never-redeemed code remains surfaced after
+    `code_expires_at` when the contract reports one (recorded as absent,
+    never invented, when it does not — the live contract reports none for
+    the owner code). No expired never-redeemed code remains surfaced after
     its window lapses; the re-minted code replaces it in the recorded display
     values.

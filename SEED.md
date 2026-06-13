@@ -13,7 +13,8 @@ declaration and MUST NOT re-declare it.
 
 `seed-domo` installs one live, text-reachable Domo on the user's Mac. The
 installing agent performs a leaves-first walk: it first reads and verifies the
-external Plow contract SEED, then installs each composed slice below, then runs
+external Plow contract SEED, then walks each composed entry below — contract
+seeds are read and recorded, generated slices are installed — then runs
 this root's union Verification against the same generated instance. The root
 MUST NOT regenerate a slice during union Verification.
 
@@ -31,12 +32,38 @@ Hard dependencies, ordered hardware to accounts to software:
 - **`jq`** - used for strict JSON checks.
 - **`curl`** - used for Plow HTTP calls.
 - **`expect`** - used by generated Claude TUI wrappers.
-- **`tmux`** - used as the generated daemon's long-lived session owner.
+- **`tmux`** - used as the long-lived owner of every generated runtime
+  process — the Claude daemon and the dashboard server share one generated
+  tmux session.
 
 Before slice 1, the installing agent MUST resolve the baked Domo home once,
 defaulting to the absolute path for `$HOME/.domo` in a user install. That path is
 an install constant carried into every slice generation. Generated entrypoints
 MUST embed the concrete path and MUST NOT read a runtime `DOMO_HOME` variable.
+
+With the baked home, the root resolves the two binding seam constants —
+install constants consumed by two slices each, exactly the baked-home
+pattern, resolved before any consuming slice generates:
+
+- **Dashboard base URL** - `http://127.0.0.1:<port>`, the household
+  dashboard's loopback address. The port is elected once at install,
+  availability-checked, non-secret, recorded in `install-report.json`, and
+  baked as a literal into every consumer (the dashboard server's bind, the
+  scheduler module's POST target, the `post-card` helper, and
+  `status`/`doctor`'s probe target).
+- **Feed token** - minted at install and written mode 600 (directory 700) to
+  the pinned path `<HOME>/.claude/household-display/feed-token`. The path IS
+  contract — written here by the root, read lazily at POST time by the
+  channel server's scheduler module and the runtime's `post-card` helper —
+  so generation order never depends on the token's presence. The token
+  never appears in argv, logs, page text, `GET` bodies, transcripts,
+  `install-report.json`, or committed files.
+
+A third root-written record follows the same lazy-read pattern: the
+household location record `<HOME>/.claude/household-location.json`, written
+once after the Household form section settles (per §"The user answers once")
+and read lazily by the scheduler — generation order never depends on it
+either.
 
 Immediately after home resolution the installing agent MUST generate the
 installer page skeleton and the setup endpoint under `<HOME>/.install/` and
@@ -74,7 +101,12 @@ The installer page and setup endpoint are governed by this bounded rule:
 The skeleton MUST render honestly while empty: a title, a "preparing your
 install…" state, the step list as placeholders, and an empty setup-form area
 marked "your part comes soon — keep this page open". It MUST never show fake
-progress. The served page polls the endpoint (`GET /status`, 1–2 s) for the
+progress. Presentation pins, page-wide: the step list / status log renders
+behind a collapsible control anchored bottom-right — the page's primary
+focus is always the user's own actions; and every user-facing string is
+plain household language — no harness, pipeline, or installer-internal
+vocabulary ever reaches a user surface. The served page polls the endpoint
+(`GET /status`, 1–2 s) for the
 current `install-report.json` rendering and form state; meta-refresh is
 retired on the served page and retained on the static fallback page below.
 A status re-render MUST preserve in-progress, un-submitted form input —
@@ -125,7 +157,12 @@ and `ref/` still ships only `verify.sh`:
 - `POST /answers` is the ONE write. It accepts the setup-form submission (or
   per-section partial submissions, each stamped at its own POST), validates
   server-side per the sanitization rules below, and atomically writes the
-  answers file. Every other write is rejected.
+  answers file. Every other write is rejected. A successful POST MUST be
+  acknowledged on the page within one poll cycle — the answered section
+  state plus a baked what-happens-next line — rendered endpoint-locally,
+  never dependent on installing-agent pickup: a save the user cannot see
+  land reads as dead air even when it landed (live-found at the composed
+  rehearsal).
 - A per-install random install token is embedded in the page URL and required
   on every request; requests without it are rejected. Rejection statuses are
   pinned with this precedence: the token check runs first, so a tokenless
@@ -158,8 +195,10 @@ and `ref/` still ships only `verify.sh`:
   silently or polling a dead endpoint.
 
 Setup-form sanitization is normative — the form is an injection surface.
-Member names and any future free text flow into the workspace prompt
-(`CLAUDE.md`), Plow display surfaces, and the page itself:
+Member names, the optional household location, and any future free text flow
+into the workspace prompt (`CLAUDE.md`), Plow display surfaces, and the page
+itself — and the location additionally into a geocode request URL and the
+generated display render surfaces, an injection surface twice over:
 
 - Names are NFC-normalized BEFORE validation so composed lookalikes cannot
   dodge the filters.
@@ -217,13 +256,29 @@ Plow-consuming slice generates:
 - [seed-plow-chat](https://github.com/plow-pbc/seed-plow-chat) - Plow Chat API
   contract.
 
-The composed slices are installed leaves-first in this order:
+The composed entries are walked leaves-first in this order — contract seeds
+enter the walk before their consumers:
 
 1. [Purpose](seeds/claude-instance/SEED.md#purpose)
 2. [Purpose](seeds/calendar-connector/SEED.md#purpose)
-3. [Purpose](seeds/plow-channel-server/SEED.md#purpose)
-4. [Purpose](seeds/plow-activation/SEED.md#purpose)
-5. [Purpose](seeds/domo-runtime/SEED.md#purpose)
+3. [Purpose](seeds/household-display/SEED.md#purpose) — contract
+   read-and-record
+4. [Purpose](seeds/daily-rhythms/SEED.md#purpose) — contract
+   read-and-record; cites 3
+5. [Purpose](seeds/plow-channel-server/SEED.md#purpose) — grown: scheduler
+   module; consumes 4's cadence table, 3's grammars and feed contract, and
+   the seam constants
+6. [Purpose](seeds/plow-activation/SEED.md#purpose)
+7. [Purpose](seeds/domo-runtime/SEED.md#purpose) — grown: wrapper, dashboard
+   server, `post-card` helper, `## Rhythms` authoring; consumes 3, 4, and
+   the seam constants
+
+Entries 3 and 4 are CONTRACT seeds: purely behavioral, they install nothing
+and generate nothing of their own. The walk reads each contract's prose as
+generation input for its consuming slices (entries 5 and 7) and records its
+admission in `install-report.json`; each contract's host-evidence clause
+binds through the consuming slices and this root's union Verification
+(items 10–12).
 
 This listed order governs each slice's verification sequence; the install's
 single interactive sitting (the decision moment) MAY interleave user-facing
@@ -287,20 +342,28 @@ this ordering removes that wait.)
   transcribes the carried values into `install-state.json` (its existing write
   gains the pass-through `calendars: { elected, elected_at }` field, copied
   verbatim from the validated answers, on normal and idempotent-short-circuit
-  paths, settled before slice-5 generation begins); `domo-runtime`'s `author`
-  reads ONLY `install-state.json` and never sees `answers.json`. Shape:
+  paths, settled before `domo-runtime` generation begins); `domo-runtime`'s
+  `author` reads ONLY `install-state.json` and never sees `answers.json`. Shape:
 
   ```json
   {
     "schema": 1,
     "mode": "solo",
     "members": [],
+    "location": "San Francisco",
     "calendars": {
       "elected": [ { "name": "Personal", "id": "pat@example.com" } ],
       "elected_at": "2026-06-10T18:00:00Z"
     }
   }
   ```
+
+  `location` is OPTIONAL free text — the Household section's
+  "Household location (city)" field: the "unknown fields rejected"
+  validation explicitly admits it, it inherits the free-text sanitization
+  rules in full, and absent or empty means no location (the weather rhythm
+  stays lazily suppressed). It is consumed only by the root's geocode-once
+  step; like every answers value, no slice reads it.
 
   `mode` is `"solo" | "group"`. `members` is always present: an array of
   `{ "name": "<sanitized>" }` that MUST be `[]` when `mode` is `"solo"` and
@@ -320,19 +383,29 @@ this ordering removes that wait.)
   discipline, and logout helper.
 - **Calendar connector slice** - `seeds/calendar-connector/SEED.md`, owner of the
   real Google Calendar connector probe and strict transcript parser.
+- **Household display contract** - `seeds/household-display/SEED.md`, a
+  contract read-and-record entry: the single declaring site for the display
+  surface, the card feed, and the compose grammars. Bound by the runtime
+  slice's dashboard server and posted to by the scheduler module and
+  `post-card` helper; admitted PARTIALLY in v1 (union Verification item 12).
+- **Daily rhythms contract** - `seeds/daily-rhythms/SEED.md`, a contract
+  read-and-record entry: the cadence table and behavior pipelines baked into
+  the channel server's scheduler module; its host-evidence clause is
+  recorded by union Verification item 11.
 - **Plow channel server slice** - `seeds/plow-channel-server/SEED.md`, owner of
   the generated MCP channel server, `claude/channel` capability, `reply` tool,
-  inbound notification delivery, WebSocket liveness, and token-redaction
-  discipline for its surface.
+  inbound notification delivery, WebSocket liveness, the rhythm scheduler
+  module, and token-redaction discipline for its surface.
 - **Plow activation slice** - `seeds/plow-activation/SEED.md`, transcriber of
   the root-carried solo/group answers into `install-state.json`, and owner of
   the Plow activation helpers, local Plow state, install state, and server-side
   chat teardown usage. The mode election itself is made at the root decision
   moment; this slice records the carried answer, it does not run an interview.
 - **Domo runtime slice** - `seeds/domo-runtime/SEED.md`, owner of workspace
-  authoring, channel registration, pinned-session daemon startup, readiness
-  gating, the first ready text, operator CLI, status/logs/stop/doctor, and reset
-  delegation.
+  authoring (including `## Rhythms`), channel registration, pinned-session
+  daemon startup, readiness gating, the first ready text, the dashboard
+  server and `post-card` helper, operator CLI, status/logs/stop/doctor, and
+  reset delegation.
 - **Plow channel state** - `<HOME>/.claude/plow-chat/state.json`, chmod 600,
   exactly `{base_url, token, chat_uid}`. The token MUST never be printed, logged,
   committed, surfaced in the dashboard, or passed in argv.
@@ -354,8 +427,10 @@ this ordering removes that wait.)
    the `## Dependencies` tiers; treat every page and endpoint failure as
    non-fatal and never let one block the install.
 3. Initialize repo-root `install-report.json` with pending records for the Plow
-   contract, all five slices, the installer page and setup endpoint (including
-   the degradation-tier transitions as they occur), and root union Verification.
+   contract, all seven walk entries (the two contract read-and-record entries
+   and the five generated slices), the installer page and setup endpoint
+   (including the degradation-tier transitions as they occur), and root union
+   Verification.
    Record the page and endpoint start timestamps retroactively. The page
    hydrates from the report from then on.
 4. Generate slice 1 (`seeds/claude-instance`) — BEFORE the contract clone. Per
@@ -371,8 +446,10 @@ this ordering removes that wait.)
 5. Clone, audit, and verify `https://github.com/plow-pbc/seed-plow-chat`. Record
    the clone path and commit in `install-report.json`. This step and the
    Plow-consuming slice generations MAY overlap the user's login.
-6. Install the remaining sub-SEEDs in the order listed in `## Dependencies`.
-   Each slice receives the same baked home. Each slice owns its own generation,
+6. Walk the remaining entries in the order listed in `## Dependencies`:
+   contract entries are read and recorded, generated slices are installed.
+   Each slice receives the same baked home and the resolved seam constants.
+   Each slice owns its own generation,
    regenerate-once policy, Verification, and terminal failure recording.
    User-facing steps cluster into the decision moment (the next action); a
    human-dependent slice verification pends until its watch section flips.
@@ -439,6 +516,14 @@ always names the real work in flight; a bare static hint with no narration
 (a real install's only opaque stretch was an unexplained two-minute
 "Preparing activation…") is a defect.
 
+Two companion pins, page-wide: every section renders an explicit
+whose-turn indicator at every moment — the user's turn ("you"), or the
+installer's, with the narration above — so no moment leaves turn ownership
+ambiguous; and whenever the agent works in the background the page renders
+a consistent activity indicator — the page never looks dead while work is
+in flight. A user MUST be able to complete the entire sitting from the
+page alone, never needing the agent session or terminal.
+
 The sections:
 
 1. **Household** — the solo/group mode election plus, for group, the other
@@ -447,6 +532,40 @@ The sections:
    owner and is automatically included; member names list the other household
    members. `members` follows the answers-file rule: `[]` for solo, 1–8 names
    for group.
+
+   The section also carries ONE optional free-text field — "Household
+   location (city)", used only for the weather rhythm. It inherits the
+   free-text sanitization rules in full (per `## Dependencies`, it flows
+   into a geocode request URL and into generated render surfaces).
+   Immediately after the Household section settles, the ROOT geocodes the
+   entered text once via Open-Meteo's keyless geocoding API (the sanitized
+   label is still URL-encoded at request time — sanitization is not
+   transport encoding) — the first
+   returned match wins; multiple candidates are disambiguation-by-rule,
+   never a failure — and writes the non-secret household location record
+   `<HOME>/.claude/household-location.json`, chmod 600,
+   `{label, resolved_place, lat, lon, geocoded_at}`, where `label` is the
+   user's entered (sanitized) text and `resolved_place` is the geocode
+   result's own city-plus-region name (e.g. "Springfield, Illinois"). The
+   moment the record is written, the page and `install-report.json` surface
+   "using <resolved_place>" — a wrong first match is catchable while the
+   user is still at the page — while the dashboard keeps rendering the
+   user's own entered `label`, the display binding's deliberate choice.
+   Skip, empty, or zero geocode
+   results → no record is written, a non-fatal note lands in
+   `install-report.json`, and the weather behavior stays lazily suppressed
+   (the scheduler re-checks while the record is absent) until a record
+   exists. A geocode CALL failure (network or timeout) is NOT a skip: it is
+   a pending retry under the install's existing retry-with-backoff posture,
+   retried during the install and again at any resume, with the non-fatal
+   note recording the retry state — only the user's own skip or empty
+   answer, or a definitive zero-result, leaves weather suppressed. A
+   resumed install that finds the location answered in the
+   durable answers file but no location record on disk re-runs the
+   geocode-once step — the generic reconcile rule, made explicit for this
+   root-written artifact. The field is optional and adds no gate: the
+   Household section stays answerable from first paint, and the decision
+   moment stays one sitting, one form.
 2. **Claude login (watch, not an input)** — the installing agent runs slice 1's
    login helper (`claude auth login`), captures the auth URL it emits, and the
    section renders that URL as a page-surfaced "log in with Claude" link (one
@@ -503,13 +622,17 @@ The sections:
    is the freeze point: everything `plow-activation` transcribes into
    `install-state.json` is settled before activation runs, and the
    answers-to-install-state transcription MUST be confirmed complete before
-   slice-5 generation begins. The section renders activation rows from the
+   `domo-runtime` generation begins. The section renders activation rows from the
    slice's recorded non-secret display values: the full `Plow Activate:
    <code>` string with a copy button, the send-to number, an `sms:` deep link
    pinned in the macOS-Messages-compatible form
    `sms:<number>&body=<url-encoded full string>`, a live countdown rendered
    from the recorded `code_expires_at` — the contract's code TTL clock, NOT the
-   helper's local `REDEEM_TIMEOUT_SECONDS` poll bound — and a verified flip
+   helper's local `REDEEM_TIMEOUT_SECONDS` poll bound; when the contract
+   reports no owner-code expiry (the live contract's
+   ActivationCreateResponse carries none), the row renders honest "the code
+   re-mints automatically if it lapses" copy instead of an empty or
+   invented timer — and a verified flip
    when redeem lands. In group mode the owner's row renders first; member
    `VERIFY-` rows render only after the generated WebSocket listener is up — the
    codes-after-listener-up invariant is unchanged, and only the member rows
@@ -532,10 +655,12 @@ logic, edit Plow state by hand, or surface the bearer token.
 ### Domo runs
 
 Runtime startup is delegated to `<HOME>/bin/domo ready`. The generated runtime
-authors the workspace, registers the Plow chat channel, starts Claude on the
-pinned session, accepts readiness only from the host MCP log registration line
-for that session, and sends the first ready text through the channel `reply` tool
-after readiness.
+authors the workspace, registers the Plow chat channel, brings up the
+household dashboard and Claude on the pinned session as one supervised tmux
+session, accepts readiness only from the host MCP log registration line
+for that session, sends the first ready text through the channel `reply` tool
+after readiness, and holds the union `status --assert` (both processes)
+green.
 
 ### Domo replies and reads the calendar
 
@@ -561,7 +686,8 @@ MUST NOT regenerate slices or build a second instance.
    test double.
 
 2. `install-report.json` exists at the repo root, not under `<HOME>`, and records
-   non-secret statuses for the Plow contract, all five slices, the installer
+   non-secret statuses for the Plow contract, all seven walk entries (the two
+   contract read-and-record entries and the five generated slices), the installer
    page and setup endpoint (including the degradation-tier transition history,
    the final tier being the one the union judges), and root union Verification.
 
@@ -611,7 +737,8 @@ MUST NOT regenerate slices or build a second instance.
    real strict `tool_use` to matching `tool_result` `tool_use_id` pair for the
    Google Calendar connector, and a text-only transcript remains `PENDING`.
    Connector-watch timing is report-verifiable: the connector section rendered
-   no URL while locked, the probe ran exactly once at login-green, that one
+   no URL while locked and at no moment before the probe reported an
+   actionable state, the probe ran exactly once at login-green, that one
    result fed all three consumers (the section flip, the calendar-election
    unlock, and the calendar-connector slice's pending verification), and it was
    NOT re-run between the calendar answer and activation.
@@ -642,14 +769,55 @@ MUST NOT regenerate slices or build a second instance.
    receives one inbound user message, and sends a user-visible reply through the
    Plow `reply` tool. This is the final live user-install E2E.
 
+10. Dashboard and rhythms binding seam: the grown slices' binding checks run
+    live against the just-generated instance. Per
+    `seeds/domo-runtime/SEED.md` items 21–28: union start brings up the
+    `daemon` and `dashboard` windows with the bare probe returning 200 and
+    union `status --assert` green through the 120-second hold; the display
+    page serves live cards behind the closed write surface (the pinned
+    403→404→405→401 precedence); cards survive a stop/start; `stop` kills
+    both legs; with the dashboard killed an inbound→`reply` round trip
+    still works while `status` truthfully reports not-green; the
+    scheduler's armed state is surfaced; and the feed token obeys the
+    extended token-hygiene probes. Per `seeds/plow-channel-server/SEED.md`
+    items 6–12: a deterministic weather tick fires live at install (when
+    the location record exists) with zero session traffic; an llm tick's
+    `<channel>` TRANSCRIPT event carries `origin="scheduler"`; catch-up
+    fires exactly once across missed ticks; and the `send-ready` transient
+    instance is suppressed loudly. And, beyond the slice items,
+    composed-rehearsal evidence owned by THIS union shows the recap
+    arriving through `reply` and one `[NOOP]` suppression — the recap by
+    drill-driven rehearsal; the `[NOOP]` leg MAY instead be recorded as a
+    pend until the first natural zero-signal day (the contract's admitted
+    pattern — never fabricate an empty calendar), and the user install's
+    evidence is the next real 7am recap.
+
+11. `daily-rhythms` host evidence recorded: item 10's deterministic tick,
+    llm tick, and `[NOOP]` suppression supply the live evidence that
+    contract's host-evidence clause demands of a consuming host, via its
+    admitted rehearsal/pending-evidence pattern; the deterministic-tick
+    evidence is owed only while the location record exists — the contract's
+    able-to-fire conditional — so a no-location install pends nothing here;
+    catch-up-once is binding-level evidence beyond the contract's demands.
+    The union records this against `daily-rhythms`.
+
+12. `household-display` PARTIAL admission recorded: the display contract's
+    checks 2–9 and 11 bind live in v1 through this union; check 10 (the
+    agenda/event-source check) is explicitly deferred with the deferred
+    event-source binding (see `## Open Items`) and recorded as a pend,
+    never silently skipped. The union records the partial admission as
+    such, never as a full pass.
+
 ## Feedback
 
 (none)
 
 ## Open Items
 
-- **Morning briefing trigger** - a scheduled morning message so Domo can
-  proactively brief the household. Deferred.
+- **Agenda event-source binding** - the display's agenda section renders its
+  declared placeholder until the event source (ICS vs agent-posted events)
+  is bound — the recorded head-chef fast-follow; display-contract check 10
+  stays pended per union Verification item 12. Deferred.
 - **Reboot survival** - a launchd job so the daemon survives a host reboot.
   Deferred.
 - **Domo-specific authorization policy** - a future policy layer can narrow what

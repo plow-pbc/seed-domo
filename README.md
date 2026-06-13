@@ -55,8 +55,9 @@ The agent resolves the persistent Domo home once, as an install constant
 (default `~/.domo`, outside the checkout), and bakes that absolute path into
 every generated file. No environment variable is read at runtime.
 
-The installing agent follows `SEED.md` and installs the five sub-SEEDs
-leaves-first, generating each slice's runtime into the baked home:
+The installing agent follows `SEED.md` and walks the seven entries
+leaves-first — two behavioral contract seeds are read and recorded, five
+generated slices install their runtime into the baked home:
 
 1. **Login.** `seeds/claude-instance/SEED.md` — isolated Claude subscription
    auth helpers under `~/.domo/runtime/claude-instance`, verifying
@@ -64,17 +65,26 @@ leaves-first, generating each slice's runtime into the baked home:
 2. **Calendar.** `seeds/calendar-connector/SEED.md` — connector probe helpers
    under `~/.domo/runtime/calendar-connector`, verifying the claude.ai Google
    Calendar connector on the same account.
-3. **Channel server.** `seeds/plow-channel-server/SEED.md` — the generated MCP
+3. **Display contract.** `seeds/household-display/SEED.md` — a purely
+   behavioral contract seed (installs nothing): the single declaring site
+   for the household display surface, its card feed, and the compose
+   grammars the producers cite.
+4. **Rhythms contract.** `seeds/daily-rhythms/SEED.md` — a purely behavioral
+   contract seed (installs nothing): the household rhythm cadence table
+   (morning recap, hourly weather) and behavior pipelines the host bakes.
+5. **Channel server.** `seeds/plow-channel-server/SEED.md` — the generated MCP
    channel server under `~/.domo/runtime/plow-channel-server` that bridges the
-   daemon to the Plow chat: the `reply` tool out, inbound texts in.
-4. **Activation.** `seeds/plow-activation/SEED.md` — Plow text activation
+   daemon to the Plow chat: the `reply` tool out, inbound texts in, and the
+   rhythm scheduler module inside it firing the baked cadence table.
+6. **Activation.** `seeds/plow-activation/SEED.md` — Plow text activation
    helpers under `~/.domo/runtime/plow-activation`, solo or group mode,
    writing chmod-600 channel state and transcribing the decision-moment
    answers into install state.
-5. **Runtime.** `seeds/domo-runtime/SEED.md` — `~/.domo/bin/domo` and runtime
-   helpers under `~/.domo/runtime/domo-runtime`; authors the workspace, starts
-   the pinned-session daemon, gates readiness on host channel registration,
-   and sends the first ready text.
+7. **Runtime.** `seeds/domo-runtime/SEED.md` — `~/.domo/bin/domo` and runtime
+   helpers under `~/.domo/runtime/domo-runtime`; authors the workspace
+   (including the rhythm instructions), starts the pinned-session daemon and
+   the loopback household dashboard under one tmux session, gates readiness
+   on host channel registration, and sends the first ready text.
 
 The only things you do are the setup form on the installer page, the
 interactive subscription login if it is needed, the browser connector toggle
@@ -88,16 +98,22 @@ After install, Domo runs as one pinned, persistent session. The generated CLI is
 
 ```bash
 $HOME/.domo/bin/domo ready   # launch the daemon and send the first ready text
-$HOME/.domo/bin/domo start   # launch the background daemon
-$HOME/.domo/bin/domo status  # config + daemon liveness + channel state, no secrets
+$HOME/.domo/bin/domo start   # launch the daemon + household dashboard
+$HOME/.domo/bin/domo status  # config + daemon/dashboard liveness + channel state, no secrets
 $HOME/.domo/bin/domo logs    # readable transcript feed
 $HOME/.domo/bin/domo doctor  # read-only preflight
-$HOME/.domo/bin/domo stop    # stop daemon and scoped channel children
+$HOME/.domo/bin/domo stop    # stop daemon, dashboard, and scoped channel children
 $HOME/.domo/bin/domo reset   # delegated cleanup/logout plus guarded local removal
 ```
 
 `$HOME/.domo/bin/domo logs` renders inbound texts, replies, and tool activity
 from the pinned-session transcript.
+
+Domo also serves a loopback-only **household dashboard** — four card slots
+(alert, message, weather, digest) plus an agenda section — fed by the
+rhythms: an hourly weather card and the morning recap's digest card.
+`domo status` prints its local URL; it lives and dies with `domo
+start`/`stop`, and a dashboard failure never blocks chat.
 
 ## Security Posture
 

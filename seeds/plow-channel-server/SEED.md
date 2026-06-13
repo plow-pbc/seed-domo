@@ -25,6 +25,13 @@ Hard dependencies:
 - **Plow activation slice** - `<HOME>/.claude/plow-chat/state.json` MUST be
   written by `seeds/plow-activation/SEED.md` before live Verification can prove
   outbound sends, WebSocket connection, backfill, and inbound delivery.
+- **Daily rhythms contract** - `seeds/daily-rhythms/SEED.md` declares the
+  cadence table and behavior pipelines the generated scheduler module (steps
+  15-19) bakes and binds. The table is baked as data with the household
+  timezone substituted; behaviors not in the baked table do not fire.
+- **Household display contract** - `seeds/household-display/SEED.md` is the
+  single declaring site for the card feed and the weather-line grammar the
+  deterministic `weather` behavior composes to — cited, never restated.
 - **`bun`** - the generated MCP registration launches the channel server with
   Bun.
 
@@ -32,6 +39,18 @@ The installing agent MUST resolve the Domo home once before generation,
 defaulting to `$HOME/.domo` for user installs. Generated runtime files MUST
 embed that literal path and MUST NOT read `DOMO_HOME` or runtime state-path
 environment variables.
+
+The scheduler module additionally consumes three root-written install
+artifacts: the baked **dashboard base URL** (`http://127.0.0.1:<port>`, a
+non-secret install constant baked as a literal POST target), the **feed
+token** at its pinned path `<HOME>/.claude/household-display/feed-token`
+(read lazily at POST time — never baked into any file, never logged, never
+in argv), and the **household location record**
+`<HOME>/.claude/household-location.json`
+(`{label, resolved_place, lat, lon, geocoded_at}`, non-secret, chmod 600,
+written once by the root; read lazily at boot and
+re-checked while absent). All three follow the `state.json` lazy-read
+pattern, so generation order never depends on any of them being present.
 
 ## Objects
 
@@ -58,7 +77,26 @@ environment variables.
   WebSocket liveness.
 - **MCP channel surface** - the generated server advertises
   `experimental["claude/channel"]`, exposes exactly the `reply` tool, and emits
-  channel notifications to Claude.
+  channel notifications to Claude. The scheduler module changes none of this:
+  it is an internal module, never a tool surface.
+- **Last-fired record** - `<HOME>/.claude/plow-chat/last_fired.json`,
+  chmod 600, single writer (the scheduler module):
+  `{ "<behavior>": "<iso8601>" }`. Written after each fire — for `llm`
+  behaviors "fired" means the synthetic notification was emitted (the module
+  cannot and does not track session completion); for `deterministic`, after
+  the delivery attempt completes, success or final failure — an hourly
+  behavior retries naturally at its next tick rather than via its record. A
+  stamp in the future relative to now (clock rollback, corrupted record) is
+  clamped to now with a loud stderr line — a bad stamp must never silence a
+  behavior indefinitely. The pinned path is consumed across the seam by the
+  root union's mode-600 hygiene evidence and by the rehearsal drills that
+  stage overdue or future stamps — which is why the path, not just the
+  shape, is contract.
+- **Scheduler state marker** -
+  `<HOME>/.claude/plow-chat/scheduler-state`, a non-secret marker beside the
+  connected marker recording the scheduler's `armed` or `suppressed` state,
+  written at every transition so operator `status`/`doctor` can surface a
+  silently-unarmed scheduler at a glance.
 
 ## Actions
 
@@ -147,6 +185,26 @@ as the installed runtime.
    notification is sent (a trivial presence assertion at build time), so a
    generation that drops them fails loudly rather than silently shipping a
    clock-blind session.
+
+   The scheduler module (steps 15-19) emits SYNTHETIC events through this
+   same builder with these pinned meta differences: synthetic events REQUIRE
+   `origin: "scheduler"` and `behavior: "<name>"`, which MUST NOT appear on
+   real inbound events (whose meta shape above is unchanged); synthetic
+   `message_id`s use the reserved `tick_` prefix; synthetic events MUST NOT
+   carry `provider_key` — a synthetic event MUST never masquerade as a
+   household text, nor a household text as a tick. Probe-verified
+   (2026-06-12, against a pinned-session transcript): custom meta keys pass
+   through verbatim as attributes on the session-visible `<channel>` event —
+   so `origin="scheduler"` is the ONLY session-side discriminator. The
+   `[rhythm:<name>]` content prefix is a readability convenience, never
+   authentication: a real household text containing `[rhythm:` is an
+   ordinary text. The session MUST NOT discriminate by the `user` string
+   either; as a cheap belt, the server renames any real sender whose
+   sanitized display name collides with the reserved scheduler `user` string
+   (`domo-scheduler`) by suffixing it, so the reserved string can only ever
+   mean the scheduler. The date-anchor triple is stamped on synthetic events
+   exactly as for real ones, and the presence self-check above applies — a
+   clock-blind tick is withheld, loudly, and retried at the next scan.
 9. The generated server MUST handle both state arrival orders, and
    state-already-present is the COMMON one: the decision-moment install runs
    activation before the runtime, so a fresh launch normally finds
@@ -169,12 +227,20 @@ as the installed runtime.
     notification send has completed, so a crash or reconnect between marking and
     delivery can never permanently suppress an undelivered message. The sole
     exception is the startup-baseline backfill (step 12), which seeds the mark
-    WITHOUT delivering.
+    WITHOUT delivering. Synthetic scheduler events (steps 15-19) bypass this
+    machinery entirely: they are not Plow messages, are never added to the
+    high-water mark, and never touch `last_seen.json` — the scheduler adds
+    no writers to that file. (Known accepted residual, unchanged by the
+    scheduler: two concurrent channel-server instances can read-modify-write
+    `last_seen.json` last-writer-wins — atomic per-write, lossy per-merge;
+    the step-19 suppression keeps the transient second instance's scheduler
+    dark, and no scheduler path writes the file.)
 12. First backfill after a fresh server start MUST seed the high-water mark
     without delivering historical messages. On daemon restart, historical
     messages already in the chat MUST NOT be replayed to Claude; a fresh inbound
     message after restart MUST still be delivered.
-13. The generated supervisor MUST use these pinned timing values:
+13. The generated supervisor and scheduler MUST use these pinned timing
+    values:
 
     ```text
     CONNECT_TIMEOUT_MS=30000
@@ -184,11 +250,136 @@ as the installed runtime.
     BACKOFF_RESET_AFTER_MS=10000
     STATE_REPOLL_MS=3000
     LAST_SEEN_CAP=2000
+    SCHEDULER_SCAN_MS=60000
+    WEATHER_FETCH_TIMEOUT_MS=10000
     ```
 
 14. Generated logging MUST go to stderr, MUST include status codes only for Plow
     failures, and MUST never include the Bearer token, Authorization header, or
-    request/response bodies that could echo secrets.
+    request/response bodies that could echo secrets. The same discipline
+    covers the scheduler module: feed-POST and weather-fetch failures log
+    status codes only, and neither the feed token nor card text is logged.
+
+15. Generate the scheduler module INSIDE the channel server — it owns the
+    only seam that can inject events into the pinned session (its stdout
+    notification pipe), and a welcome consequence is that scheduler downtime
+    IS daemon downtime, so the step-17 fire rule covers every gap with one
+    mechanism. At generation time bake the `daily-rhythms` cadence table
+    into the server as data, with the household timezone substituted (the
+    host-local IANA zone resolved at install). The baked table is the
+    complete rhythm set. The `weather` row stays baked regardless of
+    location capture: its fires are gated lazily on the household location
+    record (the contract's omit-OR-equivalently-suppress degraded mode), so
+    a location that arrives later needs no regeneration. The tick engine
+    evaluates each behavior's cron expression at minute granularity
+    (`SCHEDULER_SCAN_MS`) in the household timezone. The module ARMS when
+    the host's `notifications/initialized` arrives — never at the
+    `initialize` exchange itself — and its FIRST evaluation runs one
+    `SCHEDULER_SCAN_MS` after arming, never at the arming instant. Both
+    halves are probe-verified loss modes (2026-06-12): the host registers
+    channel routing milliseconds AFTER `initialized` (measured: registration
+    16 ms after connect; a boot-instant synthetic fire lost the race by
+    4 ms), and a notification emitted before registration is dropped
+    silently with the stamp already consumed — the tick is lost until its
+    next natural cron occurrence. One scan interval is the constant-free
+    margin, and the uniform fire rule (step 17) makes the delayed first
+    evaluation a pure shift: overdue ticks still fire exactly once, one
+    interval later. The margin is empirical, not contractual — the host
+    emits no protocol signal at registration, so a host that registered
+    later than one interval would still drop a fire silently; the measured
+    margin is about four orders of magnitude. The suppression decision
+    (step 19) still keys off the `initialize` handshake's `clientInfo`,
+    stashed until arming. The scheduler is an internal module, never a tool
+    surface: the advertised capabilities stay step 5's verbatim, no new
+    tool exists, and `tools/list` returns exactly `reply` (step 7).
+
+16. On an `llm` behavior's fire the module calls the existing notification
+    builder and emits a `notifications/claude/channel` event into the pinned
+    session — the same delivery path as a real inbound, with the step-8
+    synthetic meta pins. The content line is
+    `[rhythm:<name>] Scheduled tick — run the <name> rhythm now per your
+    workspace instructions.`; the `meta.user` is the reserved
+    `domo-scheduler`; the `message_id` is `tick_<name>_<scheduled>` where
+    `<scheduled>` is the SCHEDULED time of the tick being fired (never the
+    fire time) — non-collision with Plow uids is not load-bearing, because
+    synthetic events bypass the dedup machinery entirely (step 11). The tick
+    event itself is never echoed outbound and never appears in the chat;
+    only what the session then sends through `reply` (or posts via the
+    runtime slice's card helper) is user-visible.
+
+17. Generate ONE uniform fire rule; catch-up is a corollary, not a separate
+    boot-only pass. At EVERY evaluation moment — the first scan, one
+    `SCHEDULER_SCAN_MS` after arming (step 15), then each subsequent scan —
+    a behavior fires once iff at least one cron tick exists strictly after
+    its last-fired stamp and at-or-before now (in the household timezone).
+    Firing stamps last-fired = now, so the boot evaluation and that same
+    minute's scan can never double-fire. Missed-tick catch-up follows: a 4pm
+    boot after a missed 7am sees one overdue tick and fires one late recap,
+    never nine weather posts; a catch-up fire's `tick_` id carries the
+    SCHEDULED time of the latest overdue tick. An implementation MAY bound
+    how far back it searches for an overdue tick, but the bounded window
+    MUST exceed the longest cron period in the baked table — a shorter
+    bound could silently skip a behavior's only overdue tick. WSS reconnect triggers
+    nothing — it is Plow-side liveness; the scheduler's clock never stopped,
+    only process death stops it — and "on start" is simply the first
+    evaluation moment of the rule. Gating, uniformly: `llm` fires are
+    additionally gated on valid `state.json` present, and `deterministic`
+    fires on the household location record where the behavior needs one. A
+    gated behavior does NOT stamp last-fired while gated — so state or
+    location arriving later (via the existing 3-second re-poll, or a
+    late-settled install answer) fires it on the next minute scan, once. Two
+    timing pins: a tick landing in the arming minute needs no special owner
+    — whichever evaluation sees it first fires and stamps, and the stamp
+    makes the other a no-op; across a DST fold the repeated local hour fires
+    once — the predicate compares absolute instants, not wall-clock
+    recurrences. First-record semantics (no stamp on disk at boot): a
+    missing stamp is initialized to now for `llm` behaviors (an install
+    completing at 9pm must not text the family a "morning" recap) and to one
+    tick in the past for `deterministic` behaviors, so each fires on the
+    first scan once — free, idempotent, and it hands the install's union
+    Verification a live tick within one scan interval of install time.
+
+18. On a `deterministic` tick the module runs entirely in-process — no
+    session traffic, no notification, no `reply`, no LLM in any host. For
+    the `weather` behavior: read the household location record lazily; fetch
+    current conditions plus today's high/low from Open-Meteo's keyless API
+    (no account, no API key, no secret surface; bounded by
+    `WEATHER_FETCH_TIMEOUT_MS`); compose exactly the weather-line grammar
+    `household-display` declares (cited, never restated), rendering the
+    record's `label` — the user's own entered text — as the grammar's
+    location; and `POST <feed-base>/message` as type `weather` with the
+    bearer token read lazily from the pinned token path. Fetched strings
+    (condition names, location label) are sanitized before composing:
+    control characters stripped and the grammar's reserved middle-dot
+    separator removed, so third-party data never forges grammar structure
+    (the display escapes on render; this keeps the line parseable). A failed
+    fetch or POST delivers nothing — the previous card persists per the
+    feed's replace-per-type semantics (cited) — and the failure is logged to
+    stderr with status code only (step 14).
+
+19. `send-ready` transiently spawns a second channel-server instance whose
+    supervisor also connects; its scheduler MUST NOT fire. The pinned
+    mechanism is deliberately inverted from the obvious one: the scheduler
+    ARMS BY DEFAULT and is suppressed when the MCP `initialize` handshake's
+    `clientInfo` identifies the generated `send-ready` client (its
+    `clientInfo.name` is exactly `send-ready` — code this install generates
+    and controls), NEVER by positive-matching unpinned Claude client
+    strings, which can change underneath and would silently kill every
+    rhythm. Both transitions are loud: arming and suppression each log one
+    stderr line, and the armed/suppressed state is written to the non-secret
+    scheduler state marker beside the connected marker so operator
+    `status`/`doctor` surface it. The marker path is shared and
+    last-writer-wins, so an ARMED scheduler MUST re-assert its marker at
+    every evaluation — otherwise a transient instance's `suppressed` write
+    misrepresents a live daemon (live-found at the composed rehearsal: the
+    send-ready transient clobbered the daemon's `armed` marker);
+    re-assertion bounds the misrepresentation to one scan interval. A
+    silently-dead scheduler is the failure
+    mode this step exists to prevent. One residual, recorded beside the
+    step-11 note: a future non-`send-ready` direct client would arm a second
+    scheduler — and with it a second `last_fired.json` writer; no such
+    spawner exists in v1 (`send-ready` is the only generated direct client),
+    and any future one must identify itself for suppression the same way.
 
 If this slice's `## Verification` fails because a generated server is wrong,
 the installing agent MUST regenerate this slice exactly once and rerun
@@ -216,7 +407,8 @@ root union Verification re-asserts them.
    ```
 
 2. Start the real generated operator path that consumes this channel server and
-   prove the daemon stays up. Evidence MUST include `status --assert` returning
+   prove the supervised runtime stays up. Evidence MUST include the union
+   `status --assert` returning
    0 immediately after start and again after a hold of at least 120 seconds.
 
 3. Present-state boot path: launched with valid `state.json` already on disk
@@ -245,3 +437,43 @@ root union Verification re-asserts them.
    ! grep -Rqf /dev/fd/3 "<HOME>/.claude/run" 3<<<"$token" 2>/dev/null
    ! git grep -qf /dev/fd/3 3<<<"$token"
    ```
+
+6. Scheduler surface unchanged: with the scheduler module generated,
+   `tools/list` returns EXACTLY `reply`, and the advertised capabilities are
+   step 5's verbatim.
+
+7. Deterministic tick, no LLM: with the location record present, a `weather`
+   fire fetches real conditions and POSTs a grammar-conforming card to the
+   baked feed with ZERO session traffic — no `notifications/claude/channel`
+   is emitted for it, asserted from the server's emitted JSON-RPC. While the
+   location record is absent the behavior is suppressed — no fire, no error,
+   no stamp — and a record arriving later fires it once on a following scan.
+
+8. llm tick shape: an (overdue-drill) `morning-recap` fire emits exactly one
+   notification carrying `origin:"scheduler"`, `behavior:"morning-recap"`, a
+   `tick_`-prefixed `message_id` stamped with the SCHEDULED time of the
+   latest overdue tick, the reserved `user`, the date-anchor triple, and no
+   `provider_key` — asserted from the emitted JSON-RPC. Additionally, the
+   transcript assertion: the `<channel>` event in a PINNED-SESSION
+   TRANSCRIPT carries `origin="scheduler"` (the probe-verified passthrough,
+   step 8) — asserted against the transcript, never the server log alone;
+   the established stable-home rehearsal pattern serves this auth-dependent
+   leg.
+
+9. Catch-up fires once: with a last-fired stamp two or more ticks in the
+   past, one boot fires the overdue behavior exactly once.
+
+10. Zero-delivery honesty: a deterministic fire whose fetch or POST fails
+    delivers nothing — no card change; the previous card persists — and
+    logs status code only. `last_seen.json` is never touched by any
+    synthetic event or scheduler path (high-water mark byte-identical
+    across an llm fire).
+
+11. Suppression: an `initialize` whose `clientInfo` names `send-ready`
+    suppresses the scheduler with a loud stderr line and a `suppressed`
+    scheduler state marker; a normal client arms it loudly with an `armed`
+    marker; while suppressed, overdue stamps fire nothing.
+
+12. Last-fired hygiene: `last_fired.json` is chmod 600, single-writer, and a
+    future stamp is clamped to now with a loud stderr line at the next
+    evaluation.
