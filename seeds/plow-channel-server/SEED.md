@@ -372,7 +372,8 @@ as the installed runtime.
     every evaluation — otherwise a transient instance's `suppressed` write
     misrepresents a live daemon (live-found at the composed rehearsal: the
     send-ready transient clobbered the daemon's `armed` marker);
-    re-assertion bounds the misrepresentation to one scan interval. A silently-dead scheduler is the failure
+    re-assertion bounds the misrepresentation to one scan interval. A
+    silently-dead scheduler is the failure
     mode this step exists to prevent. One residual, recorded beside the
     step-11 note: a future non-`send-ready` direct client would arm a second
     scheduler — and with it a second `last_fired.json` writer; no such

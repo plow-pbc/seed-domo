@@ -105,7 +105,8 @@ progress. Presentation pins, page-wide: the step list / status log renders
 behind a collapsible control anchored bottom-right — the page's primary
 focus is always the user's own actions; and every user-facing string is
 plain household language — no harness, pipeline, or installer-internal
-vocabulary ever reaches a user surface. The served page polls the endpoint (`GET /status`, 1–2 s) for the
+vocabulary ever reaches a user surface. The served page polls the endpoint
+(`GET /status`, 1–2 s) for the
 current `install-report.json` rendering and form state; meta-refresh is
 retired on the served page and retained on the static fallback page below.
 A status re-render MUST preserve in-progress, un-submitted form input —
@@ -772,9 +773,11 @@ MUST NOT regenerate slices or build a second instance.
     fires exactly once across missed ticks; and the `send-ready` transient
     instance is suppressed loudly. And, beyond the slice items,
     composed-rehearsal evidence owned by THIS union shows the recap
-    arriving through `reply` and one `[NOOP]` suppression — drill-driven
-    rehearsal supplies both, and the user install's evidence is the next
-    real 7am recap, the established pending-evidence pattern.
+    arriving through `reply` and one `[NOOP]` suppression — the recap by
+    drill-driven rehearsal; the `[NOOP]` leg MAY instead be recorded as a
+    pend until the first natural zero-signal day (the contract's admitted
+    pattern — never fabricate an empty calendar), and the user install's
+    evidence is the next real 7am recap.
 
 11. `daily-rhythms` host evidence recorded: item 10's deterministic tick,
     llm tick, and `[NOOP]` suppression supply the live evidence that
