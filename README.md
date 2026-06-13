@@ -98,11 +98,11 @@ After install, Domo runs as one pinned, persistent session. The generated CLI is
 
 ```bash
 $HOME/.domo/bin/domo ready   # launch the daemon and send the first ready text
-$HOME/.domo/bin/domo start   # launch the background daemon
-$HOME/.domo/bin/domo status  # config + daemon liveness + channel state, no secrets
+$HOME/.domo/bin/domo start   # launch the daemon + household dashboard
+$HOME/.domo/bin/domo status  # config + daemon/dashboard liveness + channel state, no secrets
 $HOME/.domo/bin/domo logs    # readable transcript feed
 $HOME/.domo/bin/domo doctor  # read-only preflight
-$HOME/.domo/bin/domo stop    # stop daemon and scoped channel children
+$HOME/.domo/bin/domo stop    # stop daemon, dashboard, and scoped channel children
 $HOME/.domo/bin/domo reset   # delegated cleanup/logout plus guarded local removal
 ```
 

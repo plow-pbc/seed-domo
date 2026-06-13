@@ -544,12 +544,23 @@ The sections:
    returned match wins; multiple candidates are disambiguation-by-rule,
    never a failure — and writes the non-secret household location record
    `<HOME>/.claude/household-location.json`, chmod 600,
-   `{label, lat, lon, geocoded_at}`, where `label` is the user's entered
-   (sanitized) text. Skip, empty, a geocode call failure, or zero geocode
+   `{label, resolved_place, lat, lon, geocoded_at}`, where `label` is the
+   user's entered (sanitized) text and `resolved_place` is the geocode
+   result's own city-plus-region name (e.g. "Springfield, Illinois"). The
+   moment the record is written, the page and `install-report.json` surface
+   "using <resolved_place>" — a wrong first match is catchable while the
+   user is still at the page — while the dashboard keeps rendering the
+   user's own entered `label`, the display binding's deliberate choice.
+   Skip, empty, or zero geocode
    results → no record is written, a non-fatal note lands in
    `install-report.json`, and the weather behavior stays lazily suppressed
    (the scheduler re-checks while the record is absent) until a record
-   exists. A resumed install that finds the location answered in the
+   exists. A geocode CALL failure (network or timeout) is NOT a skip: it is
+   a pending retry under the install's existing retry-with-backoff posture,
+   retried during the install and again at any resume, with the non-fatal
+   note recording the retry state — only the user's own skip or empty
+   answer, or a definitive zero-result, leaves weather suppressed. A
+   resumed install that finds the location answered in the
    durable answers file but no location record on disk re-runs the
    geocode-once step — the generic reconcile rule, made explicit for this
    root-written artifact. The field is optional and adds no gate: the
@@ -644,10 +655,12 @@ logic, edit Plow state by hand, or surface the bearer token.
 ### Domo runs
 
 Runtime startup is delegated to `<HOME>/bin/domo ready`. The generated runtime
-authors the workspace, registers the Plow chat channel, starts Claude on the
-pinned session, accepts readiness only from the host MCP log registration line
-for that session, and sends the first ready text through the channel `reply` tool
-after readiness.
+authors the workspace, registers the Plow chat channel, brings up the
+household dashboard and Claude on the pinned session as one supervised tmux
+session, accepts readiness only from the host MCP log registration line
+for that session, sends the first ready text through the channel `reply` tool
+after readiness, and holds the union `status --assert` (both processes)
+green.
 
 ### Domo replies and reads the calendar
 

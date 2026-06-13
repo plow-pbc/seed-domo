@@ -71,15 +71,19 @@ generated `claude` invocation in this slice.
   - `author` - writes workspace prompt/config and pinned session metadata;
   - `register-channel` - registers the `plow-chat` MCP server in the isolated
     Claude config;
-  - `start` - starts the persistent daemon and runs the host-log readiness gate;
+  - `start` - starts the supervised runtime (the dashboard window first,
+    then the persistent daemon), runs the bare dashboard probe, and runs
+    the host-log readiness gate;
   - `ready` - runs `start`, then sends the first ready text out of band through
     a direct MCP client;
   - `send-ready` - sends the configured ready text through the channel `reply`
     tool without treating that send as readiness proof;
-  - `status` - prints non-secret runtime state and can assert green status;
+  - `status` - prints non-secret runtime state and can assert the union
+    green status (daemon and dashboard legs both);
   - `logs` - renders the pinned-session transcript or stripped raw daemon log;
-  - `stop` - stops the daemon by PID and tree-kills the scoped session
-    signature plus channel children;
+  - `stop` - stops the daemon by PID, tree-kills the scoped session
+    signature plus channel children, and sweeps the dashboard by its
+    baked-path signature;
   - `doctor` - runs read-only preflight checks;
   - `reset` - delegates Plow cleanup and Claude logout, then removes the baked
     home only behind `safe_remove` guards;
@@ -585,8 +589,9 @@ entrypoint.
       from the display contract's single declaring site (`<feed-base>` is
       the baked loopback base URL): `{type, text}`, bearer auth required,
       replace-per-type, malformed posts rejected — all cited, never
-      restated. Unknown fields are tolerated and ignored — the display
-      contract's additive evolution path. A non-GET method to `/` or
+      restated. Fields beyond `{type, text}` are tolerated and ignored per
+      the display contract's additive-evolution rule (cited from its
+      declaring site). A non-GET method to `/` or
       `/messages` is rejected `405`, the same wrong-method status the
       bounded rule pins for `/message`.
 
@@ -723,9 +728,10 @@ The installing agent runs:
 ```
 
 The generated CLI authors workspace config, registers the channel, starts the
-daemon on the pinned session, waits for the authoritative host MCP log
+supervised runtime — the dashboard server first, then the daemon on the
+pinned session — waits for the authoritative host MCP log
 registration line, and only then sends the first ready text through the Plow
-`reply` tool.
+`reply` tool, holding the union assert green afterward.
 
 The user install E2E is the real phone receiving the default ready text. The dev
 rehearsal E2E is the same ready text landing in the local Plow chat.
@@ -898,14 +904,23 @@ evidence plus the thin self-checks needed to decide whether this slice passes.
 22. Page is live with cards: `GET /` on the baked loopback URL renders the
     display surface; a `POST <feed-base>/message` with the bearer token and
     `{type, text}` appears on the next poll; a second POST of the same type
-    replaces the first (replace-per-type, live).
+    replaces the first (replace-per-type, live). A never-posted slot renders
+    the muted placeholder; a non-conforming weather line renders as raw,
+    unmodified text (the grammar's parse-or-fallback rule); and the rendered
+    page carries no interactive control — no write originates from it (the
+    display contract's checks 7, 9, and 11, bound live here).
 
 23. Write surface is closed: a tokenless or wrong-token POST is rejected;
     non-POST methods on `/message` are rejected; a mismatched-`Host` request
     is rejected on every route; the pinned rejection precedence (step 17:
     Host-mismatch 403 → unknown route 404 → wrong method 405 → bad bearer
     401) is proven; reads carry no token anywhere in URL, page text, or
-    bodies; markup posted as card text renders inert.
+    bodies; markup posted as card text renders inert. Malformed posts — a
+    bad type token, a missing field, over-length text, a forbidden control
+    character — are rejected `400` with no card change, and a well-formed
+    type outside the four slots is stored while the page still renders
+    exactly its four slots (the display contract's checks 5 and 6, bound
+    live here).
 
 24. Cards survive restart: `<HOME>/bin/domo stop` then `<HOME>/bin/domo
     start`; previously posted cards render without re-posting.

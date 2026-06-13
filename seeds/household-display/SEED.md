@@ -102,7 +102,9 @@ binding lands. A host that lists this contract MUST bind and live-run its
 4. The type namespace is open: a well-formed type outside the four card
    slots is stored normally. The surface renders only its four slots and
    ignores other types — new types can be introduced producer-first without
-   breaking a deployed display.
+   breaking a deployed display. Request fields beyond `{type, text}` are
+   likewise tolerated and ignored — the same additive evolution path: a
+   future field lands producer-first without breaking a deployed store.
 5. Producers MUST NOT post secrets, credentials, or bearer-style URLs (any
    URL embedding a token or join secret) in card text. The display renders
    text inert, but it cannot recognize every secret; this producer rule is

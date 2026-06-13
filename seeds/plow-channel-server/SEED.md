@@ -46,8 +46,9 @@ non-secret install constant baked as a literal POST target), the **feed
 token** at its pinned path `<HOME>/.claude/household-display/feed-token`
 (read lazily at POST time — never baked into any file, never logged, never
 in argv), and the **household location record**
-`<HOME>/.claude/household-location.json` (`{label, lat, lon, geocoded_at}`,
-non-secret, chmod 600, written once by the root; read lazily at boot and
+`<HOME>/.claude/household-location.json`
+(`{label, resolved_place, lat, lon, geocoded_at}`, non-secret, chmod 600,
+written once by the root; read lazily at boot and
 re-checked while absent). All three follow the `state.json` lazy-read
 pattern, so generation order never depends on any of them being present.
 
@@ -406,7 +407,8 @@ root union Verification re-asserts them.
    ```
 
 2. Start the real generated operator path that consumes this channel server and
-   prove the daemon stays up. Evidence MUST include `status --assert` returning
+   prove the supervised runtime stays up. Evidence MUST include the union
+   `status --assert` returning
    0 immediately after start and again after a hold of at least 120 seconds.
 
 3. Present-state boot path: launched with valid `state.json` already on disk
